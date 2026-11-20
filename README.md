@@ -10,8 +10,8 @@ Expose a **single unified remote environment** to `chat.letta.com` from a self-h
 ## Status
 
 - [x] **Milestone 1:** Protocol inspection of `letta-ai/letta-code` (`src/websocket/app-server.ts`, `src/websocket/listen-register.ts`, `src/websocket/listener/*`, `src/types/protocol_v2.ts`)
-- [ ] **Milestone 2:** Passthrough proxy (implemented & verified against mock relay; ready for live `chat.letta.com` smoke test)
-- [ ] **Milestone 3:** Envelope router (`conversation_id` routing, `request_id` correlation, `event_seq` rewriting)
+- [x] **Milestone 2:** Passthrough proxy (verified live with `chat.letta.com`)
+- [ ] **Milestone 3:** Envelope router (`conversation_id` routing, `request_id` correlation, `event_seq` rewriting — implemented & verified against mock multi-server suite; ready for live multi-server test)
 - [ ] **Milestone 4:** Lazy gVisor (`runsc`) container spawning and idle reaping per `conversation_id`
 
 ## Development
@@ -22,20 +22,26 @@ bun run typecheck
 bun test
 ```
 
-## Running Milestone 2 (Passthrough Proxy)
+## Running the Multiplexer (Milestone 2 / Milestone 3)
 
-Start an unmodified local `letta server` in app-server mode:
+Start the control-plane `letta server` and one or more conversation worker `letta server` instances:
 
 ```zsh
+# Control-plane (computer-level commands, default sync, stateless conversation CRUD)
 letta server --listen ws://127.0.0.1:4500
+
+# Conversation worker(s) (optional; omit WORKER_URLS to run in single-server Milestone 2 mode)
+letta server --listen ws://127.0.0.1:4501
+letta server --listen ws://127.0.0.1:4502
 ```
 
-Then start the passthrough proxy with your Letta API key:
+Then start the multiplexer:
 
 ```zsh
 LETTA_API_KEY="sk-let-..." \
-LETTA_CONNECTION_NAME="my-vps" \
-DOWNSTREAM_URL="ws://127.0.0.1:4500/ws" \
+LETTA_CONNECTION_NAME="letta-sandbox" \
+CONTROL_PLANE_URL="ws://127.0.0.1:4500/ws" \
+WORKER_URLS="ws://127.0.0.1:4501/ws,ws://127.0.0.1:4502/ws" \
 DEBUG_FRAMES=1 \
 bun run start
 ```
@@ -48,7 +54,9 @@ bun run start
 | `LETTA_SERVER_URL` | `https://api.letta.com` | Letta Cloud API base URL |
 | `LETTA_CONNECTION_NAME` | `letta-sandbox-<hostname>` | Display name shown in `chat.letta.com` |
 | `LETTA_DEVICE_ID` | persisted in `~/.letta-sandbox/device-id` | Stable UUID for this remote environment |
-| `DOWNSTREAM_URL` | `ws://127.0.0.1:4500/ws` | Local `letta server --listen` WebSocket URL |
+| `CONTROL_PLANE_URL` / `DOWNSTREAM_URL` | `ws://127.0.0.1:4500/ws` | Control-plane `letta server --listen` WebSocket URL |
+| `WORKER_URLS` | *(empty — falls back to control-plane)* | Comma-separated conversation worker `letta server --listen` WebSocket URLs |
 | `DOWNSTREAM_WS_TOKEN` / `DOWNSTREAM_WS_TOKEN_FILE` | *(optional)* | Capability token when using `--ws-auth capability-token` |
-| `DEBUG_FRAMES` | `false` | Set `1` or `true` to log routed frame envelope summaries |
+| `WORKER_WS_TOKEN` / `WORKER_WS_TOKEN_FILE` | *(falls back to `DOWNSTREAM_WS_TOKEN`)* | Capability token for worker instances |
+| `DEBUG_FRAMES` | `false` | Set `1` or `true` to log routed frame envelope summaries & `event_seq` rewrites |
 

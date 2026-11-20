@@ -6,6 +6,24 @@ export const STREAM_CHANNEL_MESSAGE_TYPES = new Set<string>([
   "update_subagent_state",
 ]);
 
+export const STATELESS_CONVERSATION_CRUD_TYPES = new Set<string>([
+  "conversation_retrieve",
+  "conversation_update",
+  "conversation_recompile",
+  "conversation_fork",
+  "conversation_messages_list",
+  "conversation_compact",
+]);
+
+export const PTY_COMMAND_TYPES = new Set<string>([
+  "terminal_spawn",
+  "terminal_input",
+  "terminal_resize",
+  "terminal_kill",
+]);
+
+export const DEFAULT_CONVERSATION_ID = "default";
+
 export type UpstreamChannel = "control" | "stream";
 
 export interface AppServerInfo {
@@ -27,6 +45,15 @@ export interface ListenerReadyFrame {
   type: "listener_ready";
   connection_generation?: string;
   connection_attempt?: number;
+}
+
+export interface RoutingEnvelope {
+  type?: string;
+  requestId?: string;
+  runtimeConversationId?: string;
+  topLevelConversationId?: string;
+  hasCreateConversation: boolean;
+  eventSeq?: number;
 }
 
 export function selectUpstreamChannel(
@@ -71,6 +98,53 @@ export function getFrameType(frame: Record<string, unknown> | null): string | un
   return typeof frame.type === "string" ? frame.type : undefined;
 }
 
+export function extractRoutingEnvelope(frame: Record<string, unknown> | null): RoutingEnvelope {
+  if (!frame) {
+    return { hasCreateConversation: false };
+  }
+
+  const type = typeof frame.type === "string" ? frame.type : undefined;
+  const requestId = typeof frame.request_id === "string" ? frame.request_id : undefined;
+  const topLevelConversationId =
+    typeof frame.conversation_id === "string" && frame.conversation_id.length > 0
+      ? frame.conversation_id
+      : undefined;
+
+  let runtimeConversationId: string | undefined;
+  const runtime = frame.runtime;
+  if (runtime && typeof runtime === "object" && !Array.isArray(runtime)) {
+    const conv = (runtime as Record<string, unknown>).conversation_id;
+    if (typeof conv === "string" && conv.length > 0) {
+      runtimeConversationId = conv;
+    }
+  }
+
+  const hasCreateConversation = Boolean(frame.create_conversation);
+  const eventSeq = typeof frame.event_seq === "number" ? frame.event_seq : undefined;
+
+  return {
+    type,
+    requestId,
+    runtimeConversationId,
+    topLevelConversationId,
+    hasCreateConversation,
+    eventSeq,
+  };
+}
+
+export function rewriteEventSeq(
+  raw: string,
+  frame: Record<string, unknown> | null,
+  nextSeq: () => number,
+): { raw: string; rewrittenSeq?: number } {
+  if (!frame || typeof frame.event_seq !== "number") {
+    return { raw };
+  }
+  const seq = nextSeq();
+  const rewritten = { ...frame, event_seq: seq };
+  return { raw: JSON.stringify(rewritten), rewrittenSeq: seq };
+}
+
 export function isPongFrame(frame: Record<string, unknown> | null): boolean {
   return getFrameType(frame) === "pong";
 }
@@ -83,16 +157,12 @@ export function isListenerReadyFrame(
 
 export function summarizeFrame(frame: Record<string, unknown> | null): string {
   if (!frame) return "<non-json>";
+  const env = extractRoutingEnvelope(frame);
   const parts: string[] = [];
-  if (typeof frame.type === "string") parts.push(`type=${frame.type}`);
-  if (typeof frame.request_id === "string") parts.push(`req=${frame.request_id}`);
-  const runtime = frame.runtime;
-  if (runtime && typeof runtime === "object" && !Array.isArray(runtime)) {
-    const convId = (runtime as Record<string, unknown>).conversation_id;
-    if (typeof convId === "string") parts.push(`conv=${convId}`);
-  } else if (typeof frame.conversation_id === "string") {
-    parts.push(`conv=${frame.conversation_id}`);
-  }
-  if (typeof frame.event_seq === "number") parts.push(`seq=${frame.event_seq}`);
+  if (env.type) parts.push(`type=${env.type}`);
+  if (env.requestId) parts.push(`req=${env.requestId}`);
+  const convId = env.runtimeConversationId ?? env.topLevelConversationId;
+  if (convId) parts.push(`conv=${convId}`);
+  if (env.eventSeq !== undefined) parts.push(`seq=${env.eventSeq}`);
   return parts.length > 0 ? parts.join(" ") : "<empty-frame>";
 }

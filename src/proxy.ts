@@ -1,8 +1,13 @@
 import type { ProxyConfig } from "./config.ts";
 import { DownstreamClient } from "./downstream.ts";
-import { getFrameType, parseJsonObject, summarizeFrame } from "./protocol.ts";
 import { fetchAppServerInfo, waitForDownstreamHealth } from "./register.ts";
+import {
+  type ConversationTargetProvider,
+  type DownstreamTarget,
+  EnvelopeRouter,
+} from "./router.ts";
 import { UpstreamRelayClient } from "./upstream.ts";
+import { StaticWorkerPool } from "./worker-pool.ts";
 
 export interface Logger {
   info: (msg: string) => void;
@@ -33,7 +38,9 @@ export class PassthroughProxy {
   private readonly onTerminalClose?: (reason: string) => void;
   private readonly onUpstreamReady?: () => void;
 
-  private downstream: DownstreamClient | null = null;
+  private controlPlane: DownstreamClient | null = null;
+  private conversationProvider: ConversationTargetProvider | null = null;
+  private router: EnvelopeRouter | null = null;
   private upstream: UpstreamRelayClient | null = null;
   private stopped = false;
 
@@ -48,7 +55,7 @@ export class PassthroughProxy {
   async start(): Promise<void> {
     this.stopped = false;
     this.logger.info(
-      `Waiting for downstream letta server at ${this.config.downstreamHttpUrl}/healthz`,
+      `Waiting for control-plane letta server at ${this.config.downstreamHttpUrl}/healthz`,
     );
 
     await waitForDownstreamHealth(this.config.downstreamHttpUrl, {
@@ -65,43 +72,72 @@ export class PassthroughProxy {
     const cmdCount = (appServerInfo.supported_commands ?? appServerInfo.supportedCommands ?? [])
       .length;
     this.logger.info(
-      `Downstream ready (letta-code ${version}, ${cmdCount} supported_commands)`,
+      `Control-plane ready (letta-code ${version}, ${cmdCount} supported_commands, ${this.config.workerWsUrls.length} configured worker(s))`,
     );
 
     if (this.stopped) return;
 
-    const downstream = new DownstreamClient({
+    let controlTarget: DownstreamTarget;
+    const controlClient = new DownstreamClient({
       wsUrl: this.config.downstreamWsUrl,
       token: this.config.downstreamWsToken,
       reconnectBaseDelayMs: this.config.reconnectBaseDelayMs,
       reconnectMaxDelayMs: this.config.reconnectMaxDelayMs,
       onMessage: (raw) => {
-        const frame = parseJsonObject(raw);
-        const frameType = getFrameType(frame);
-        const channel = this.upstream?.send(raw, frameType);
-        if (this.config.debugFrames) {
-          this.logger.debug(
-            `downstream -> upstream(${channel ?? "none"}): ${summarizeFrame(frame)}`,
-          );
-        }
+        this.router?.handleDownstreamMessage(controlTarget, raw);
       },
       onOpen: () => {
-        this.logger.info(`Connected to downstream ${this.config.downstreamWsUrl}`);
+        this.logger.info(`Connected to control-plane ${this.config.downstreamWsUrl}`);
       },
       onClose: (code, reason) => {
-        this.logger.warn(`Downstream closed (${code}: ${reason || "no reason"})`);
+        this.logger.warn(`Control-plane closed (${code}: ${reason || "no reason"})`);
       },
       onError: (err) => {
-        this.logger.error(`Downstream error: ${String(err)}`);
+        this.logger.error(`Control-plane error: ${String(err)}`);
       },
     });
-    this.downstream = downstream;
-    await downstream.connect();
+    controlTarget = {
+      id: "control-plane",
+      send: (raw) => controlClient.send(raw),
+      close: () => controlClient.close(),
+    };
+    this.controlPlane = controlClient;
+    await controlClient.connect();
 
     if (this.stopped) {
-      downstream.close();
+      controlClient.close();
       return;
     }
+
+    const workerPool = new StaticWorkerPool({
+      workerUrls: this.config.workerWsUrls,
+      fallbackTarget: controlTarget,
+      token: this.config.workerWsToken,
+      reconnectBaseDelayMs: this.config.reconnectBaseDelayMs,
+      reconnectMaxDelayMs: this.config.reconnectMaxDelayMs,
+      onMessage: (target, raw) => {
+        this.router?.handleDownstreamMessage(target, raw);
+      },
+      onWorkerOpen: (workerId, url) => {
+        this.logger.info(`Connected to ${workerId} (${url})`);
+      },
+      onWorkerClose: (workerId, code, reason) => {
+        this.logger.warn(`${workerId} closed (${code}: ${reason || "no reason"})`);
+      },
+      onWorkerError: (workerId, err) => {
+        this.logger.error(`${workerId} error: ${String(err)}`);
+      },
+    });
+    this.conversationProvider = workerPool;
+
+    const router = new EnvelopeRouter({
+      controlPlane: controlTarget,
+      conversationProvider: workerPool,
+      sendToUpstream: (raw, frameType) => this.upstream?.send(raw, frameType) ?? null,
+      debugFrames: this.config.debugFrames,
+      logger: this.logger,
+    });
+    this.router = router;
 
     const upstream = new UpstreamRelayClient({
       lettaServerUrl: this.config.lettaServerUrl,
@@ -116,13 +152,10 @@ export class PassthroughProxy {
       reconnectMaxDelayMs: this.config.reconnectMaxDelayMs,
       fetchImpl: this.fetchImpl,
       onMessage: (raw, channel) => {
-        if (this.config.debugFrames) {
-          const frame = parseJsonObject(raw);
-          this.logger.debug(`upstream(${channel}) -> downstream: ${summarizeFrame(frame)}`);
-        }
-        this.downstream?.send(raw);
+        void this.router?.handleUpstreamMessage(raw, channel);
       },
       onReady: (info) => {
+        this.router?.resetEventSeq();
         this.logger.info(
           `Upstream ready (connectionId=${info.connectionId}, split=${info.splitChannels}, paired=${info.pairedGenerations}, attempt=${info.attempt})`,
         );
@@ -151,7 +184,12 @@ export class PassthroughProxy {
     this.stopped = true;
     this.upstream?.close();
     this.upstream = null;
-    this.downstream?.close();
-    this.downstream = null;
+    this.conversationProvider?.closeAll();
+    this.conversationProvider = null;
+    this.controlPlane?.close();
+    this.controlPlane = null;
+    this.router = null;
   }
 }
+
+export { PassthroughProxy as MultiplexerProxy };

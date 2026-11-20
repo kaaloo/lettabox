@@ -274,6 +274,7 @@ function makeConfig(
     listenerInstanceId: deriveListenerInstanceId(connectionName),
     downstreamWsUrl: downstream.wsUrl,
     downstreamHttpUrl: downstream.httpUrl,
+    workerWsUrls: [],
     heartbeatIntervalMs: 30_000,
     heartbeatMaxMissed: 3,
     reconnectBaseDelayMs: 30,
@@ -507,5 +508,111 @@ describe("PassthroughProxy integration", () => {
       event_seq: 1,
       delta: "single-socket",
     });
+  });
+
+  test("multiplexes control-plane and multiple worker servers with event_seq rewriting", async () => {
+    const controlPlane = createMockDownstream();
+    const worker1 = createMockDownstream();
+    const worker2 = createMockDownstream();
+    const relay = createMockRelay({
+      expectedApiKey: "test-api-key",
+      supportsSplitStatusChannels: true,
+      supportsPairedListenerGenerations: true,
+    });
+    cleanups.push(
+      () => controlPlane.stop(),
+      () => worker1.stop(),
+      () => worker2.stop(),
+      () => relay.stop(),
+    );
+
+    let readyCount = 0;
+    const proxy = new PassthroughProxy({
+      config: makeConfig(relay.httpUrl, controlPlane, {
+        workerWsUrls: [worker1.wsUrl, worker2.wsUrl],
+      }),
+      logger: silentLogger,
+      onUpstreamReady: () => {
+        readyCount += 1;
+      },
+    });
+    cleanups.push(() => proxy.stop());
+
+    await proxy.start();
+    await waitFor(() => readyCount === 1);
+
+    // 1. Control-plane frames: default sync, list_models, stateless conversation_messages_list
+    relay.sendOnControl({
+      type: "sync",
+      runtime: { agent_id: null, conversation_id: "default" },
+    });
+    relay.sendOnControl({ type: "list_models", request_id: "req-models" });
+    relay.sendOnControl({
+      type: "conversation_messages_list",
+      request_id: "req-history",
+      conversation_id: "conv-a",
+    });
+
+    await waitFor(() => controlPlane.received.length === 3);
+    expect(worker1.received).toHaveLength(0);
+    expect(worker2.received).toHaveLength(0);
+
+    // 2. Conversation A -> worker-1, Conversation B -> worker-2
+    relay.sendOnControl({
+      type: "runtime_start",
+      request_id: "req-start-a",
+      conversation_id: "conv-a",
+    });
+    relay.sendOnControl({
+      type: "input",
+      request_id: "req-in-a",
+      runtime: { agent_id: "ag-1", conversation_id: "conv-a" },
+      text: "hi worker 1",
+    });
+    relay.sendOnControl({
+      type: "sync",
+      runtime: { agent_id: "ag-1", conversation_id: "conv-b" },
+    });
+    relay.sendOnControl({
+      type: "input",
+      request_id: "req-in-b",
+      runtime: { agent_id: "ag-1", conversation_id: "conv-b" },
+      text: "hi worker 2",
+    });
+
+    await waitFor(() => worker1.received.length === 2 && worker2.received.length === 2);
+    expect(controlPlane.received).toHaveLength(3);
+    expect(worker1.received.map((s) => JSON.parse(s).type)).toEqual(["runtime_start", "input"]);
+    expect(worker2.received.map((s) => JSON.parse(s).type)).toEqual(["sync", "input"]);
+
+    // 3. Worker-1 sends control_request -> upstream replies control_response -> routes back to worker-1
+    worker1.sendToProxy({
+      type: "control_request",
+      request_id: "perm-1",
+      tool: "bash",
+    });
+    await waitFor(() => relay.controlMessages.length === 1);
+    relay.sendOnControl({
+      type: "control_response",
+      request_id: "perm-1",
+      approved: true,
+    });
+    await waitFor(() => worker1.received.length === 3);
+    expect(JSON.parse(worker1.received[2]!)).toEqual({
+      type: "control_response",
+      request_id: "perm-1",
+      approved: true,
+    });
+    expect(worker2.received).toHaveLength(2);
+
+    // 4. Interleaved local event_seq (1, 1, 1, 2) from all 3 servers -> monotonic (1, 2, 3, 4) upstream
+    controlPlane.sendToProxy({ type: "update_device_status", event_seq: 1, src: "cp" });
+    worker1.sendToProxy({ type: "stream_delta", event_seq: 1, src: "w1" });
+    worker2.sendToProxy({ type: "stream_delta", event_seq: 1, src: "w2" });
+    worker1.sendToProxy({ type: "stream_delta", event_seq: 2, src: "w1-2" });
+
+    await waitFor(() => relay.streamMessages.length === 4);
+    const seqs = relay.streamMessages.map((s) => (JSON.parse(s) as { event_seq: number }).event_seq);
+    expect(seqs).toEqual([1, 2, 3, 4]);
   });
 });

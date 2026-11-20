@@ -12,6 +12,8 @@ export interface ProxyConfig {
   downstreamWsUrl: string;
   downstreamHttpUrl: string;
   downstreamWsToken?: string;
+  workerWsUrls: string[];
+  workerWsToken?: string;
   heartbeatIntervalMs: number;
   heartbeatMaxMissed: number;
   reconnectBaseDelayMs: number;
@@ -62,6 +64,14 @@ function parsePositiveInt(value: string | undefined, fallback: number, name: str
   return parsed;
 }
 
+function parseUrlList(value: string | undefined): string[] {
+  if (!value) return [];
+  return value
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+}
+
 export function loadConfig(env: Record<string, string | undefined> = process.env): ProxyConfig {
   const lettaApiKey = env.LETTA_API_KEY?.trim();
   if (!lettaApiKey) {
@@ -77,13 +87,24 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     env.LETTA_DEVICE_ID_FILE?.trim() || join(homedir(), ".letta-sandbox", "device-id");
   const deviceId = env.LETTA_DEVICE_ID?.trim() || loadOrCreateDeviceId(deviceIdFile);
 
-  const downstreamWsUrl = env.DOWNSTREAM_URL?.trim() || "ws://127.0.0.1:4500/ws";
+  const downstreamWsUrl =
+    env.CONTROL_PLANE_URL?.trim() || env.DOWNSTREAM_URL?.trim() || "ws://127.0.0.1:4500/ws";
   const downstreamHttpUrl = toHttpBaseUrl(downstreamWsUrl);
 
   let downstreamWsToken = env.DOWNSTREAM_WS_TOKEN?.trim();
   const tokenFile = env.DOWNSTREAM_WS_TOKEN_FILE?.trim();
   if (!downstreamWsToken && tokenFile) {
     downstreamWsToken = readFileSync(tokenFile, "utf8").trim();
+  }
+
+  const workerWsUrls = parseUrlList(env.WORKER_URLS);
+  let workerWsToken = env.WORKER_WS_TOKEN?.trim();
+  const workerTokenFile = env.WORKER_WS_TOKEN_FILE?.trim();
+  if (!workerWsToken && workerTokenFile) {
+    workerWsToken = readFileSync(workerTokenFile, "utf8").trim();
+  }
+  if (!workerWsToken) {
+    workerWsToken = downstreamWsToken;
   }
 
   return {
@@ -95,6 +116,8 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     downstreamWsUrl,
     downstreamHttpUrl,
     downstreamWsToken: downstreamWsToken || undefined,
+    workerWsUrls,
+    workerWsToken: workerWsToken || undefined,
     heartbeatIntervalMs: parsePositiveInt(
       env.HEARTBEAT_INTERVAL_MS,
       30_000,
