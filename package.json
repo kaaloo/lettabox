@@ -1,11 +1,14 @@
 {
-  "name": "letta-sandbox",
+  "name": "lettabox",
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "bin": {
+    "lettabox": "./src/cli.ts"
+  },
   "scripts": {
-    "dev": "bun --watch src/index.ts",
-    "start": "bun run src/index.ts",
+    "dev": "bun --watch src/cli.ts",
+    "start": "bun run src/cli.ts",
     "typecheck": "tsc --noEmit",
     "test": "bun test"
   },

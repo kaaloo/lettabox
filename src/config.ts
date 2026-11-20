@@ -101,19 +101,52 @@ function parseSandboxMode(value: string | undefined): SandboxMode {
   );
 }
 
+export function readApiKeyFromLettaSettings(
+  settingsFile: string = join(homedir(), ".letta", "settings.json"),
+): string | undefined {
+  if (!existsSync(settingsFile)) return undefined;
+  try {
+    const raw = readFileSync(settingsFile, "utf8");
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const candidates: unknown[] = [
+      parsed.apiKey,
+      parsed.api_key,
+      parsed.lettaApiKey,
+      parsed.accessToken,
+      parsed.token,
+      (parsed.auth as Record<string, unknown> | undefined)?.apiKey,
+      (parsed.auth as Record<string, unknown> | undefined)?.accessToken,
+    ];
+    for (const value of candidates) {
+      if (typeof value === "string" && value.trim().length > 0) {
+        return value.trim();
+      }
+    }
+    return undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export function loadConfig(env: Record<string, string | undefined> = process.env): ProxyConfig {
-  const lettaApiKey = env.LETTA_API_KEY?.trim();
+  const settingsFile = env.LETTA_SETTINGS_FILE?.trim() || join(homedir(), ".letta", "settings.json");
+  const lettaApiKey = env.LETTA_API_KEY?.trim() || readApiKeyFromLettaSettings(settingsFile);
   if (!lettaApiKey) {
-    throw new Error("LETTA_API_KEY is required");
+    throw new Error(
+      "LETTA_API_KEY is required (set LETTA_API_KEY or log in via `letta login` so ~/.letta/settings.json has a token)",
+    );
   }
 
   const lettaServerUrl = (env.LETTA_SERVER_URL?.trim() || "https://api.letta.com").replace(
     /\/+$/,
     "",
   );
-  const connectionName = env.LETTA_CONNECTION_NAME?.trim() || `letta-sandbox-${hostname()}`;
-  const deviceIdFile =
-    env.LETTA_DEVICE_ID_FILE?.trim() || join(homedir(), ".letta-sandbox", "device-id");
+  const connectionName = env.LETTA_CONNECTION_NAME?.trim() || `lettabox-${hostname()}`;
+  const legacyDeviceIdFile = join(homedir(), ".letta-sandbox", "device-id");
+  const defaultDeviceIdFile = existsSync(legacyDeviceIdFile)
+    ? legacyDeviceIdFile
+    : join(homedir(), ".lettabox", "device-id");
+  const deviceIdFile = env.LETTA_DEVICE_ID_FILE?.trim() || defaultDeviceIdFile;
   const deviceId = env.LETTA_DEVICE_ID?.trim() || loadOrCreateDeviceId(deviceIdFile);
 
   const downstreamWsUrl =
