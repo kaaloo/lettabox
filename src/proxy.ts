@@ -34,6 +34,7 @@ export interface PassthroughProxyOptions {
   onTerminalClose?: (reason: string) => void;
   onUpstreamReady?: () => void;
   onUpstreamDisconnect?: () => void;
+  onWorkingChange?: (working: boolean) => void;
 }
 
 export class PassthroughProxy {
@@ -45,6 +46,7 @@ export class PassthroughProxy {
   private readonly onTerminalClose?: (reason: string) => void;
   private readonly onUpstreamReady?: () => void;
   private readonly onUpstreamDisconnect?: () => void;
+  private readonly onWorkingChange?: (working: boolean) => void;
 
   private controlPlane: DownstreamClient | null = null;
   private conversationProvider: ConversationTargetProvider | null = null;
@@ -63,6 +65,7 @@ export class PassthroughProxy {
     this.onTerminalClose = options.onTerminalClose;
     this.onUpstreamReady = options.onUpstreamReady;
     this.onUpstreamDisconnect = options.onUpstreamDisconnect;
+    this.onWorkingChange = options.onWorkingChange;
   }
 
   listActiveSandboxes(): ActiveSandboxInfo[] {
@@ -152,6 +155,9 @@ export class PassthroughProxy {
         logger: this.logger,
         onMessage: (target, raw) => {
           this.router?.handleDownstreamMessage(target, raw);
+        },
+        onBusyChange: (anyBusy) => {
+          this.onWorkingChange?.(anyBusy);
         },
       });
       this.msbProvider = msbProvider;

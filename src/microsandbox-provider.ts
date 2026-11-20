@@ -46,6 +46,7 @@ export interface MicrosandboxProviderOptions {
   now?: () => number;
   logger?: SandboxLogger;
   onMessage: (target: DownstreamTarget, raw: string) => void;
+  onBusyChange?: (anyBusy: boolean) => void;
 }
 
 interface ManagedMicrosandbox {
@@ -138,6 +139,7 @@ export class MicrosandboxProvider implements ConversationTargetProvider {
   private readonly reservedPorts = new Set<number>();
   private reaperTimer: ReturnType<typeof setInterval> | null = null;
   private closed = false;
+  private lastAnyBusy = false;
 
   constructor(options: MicrosandboxProviderOptions) {
     this.options = options;
@@ -439,6 +441,7 @@ export class MicrosandboxProvider implements ConversationTargetProvider {
         onMessage: (raw) => {
           sandbox.lastActivityAt = this.now();
           updateBusyFromDownstreamFrame(sandbox, raw);
+          this.notifyBusyChange();
           this.options.onMessage(sandbox.target, raw);
         },
         onPermanentClose: (code, reason) => {
@@ -495,10 +498,19 @@ export class MicrosandboxProvider implements ConversationTargetProvider {
     }
   }
 
+  private notifyBusyChange(): void {
+    const anyBusy = this.listActiveSandboxes().some((s) => s.busy);
+    if (anyBusy !== this.lastAnyBusy) {
+      this.lastAnyBusy = anyBusy;
+      this.options.onBusyChange?.(anyBusy);
+    }
+  }
+
   private async destroySandbox(sandbox: ManagedMicrosandbox, reason: string): Promise<void> {
     if (sandbox.stopping) return;
     sandbox.stopping = true;
     sandbox.busy = false;
+    this.notifyBusyChange();
     sandbox.client.close();
     this.reservedPorts.delete(sandbox.hostPort);
     this.options.logger?.info(
