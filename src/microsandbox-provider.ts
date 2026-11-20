@@ -141,6 +141,8 @@ export class MicrosandboxProvider implements ConversationTargetProvider {
   private readonly inFlightSpawns = new Map<string, Promise<ManagedMicrosandbox>>();
   private readonly warmPool: ManagedMicrosandbox[] = [];
   private readonly warmRefills = new Set<Promise<void>>();
+  private warmRefillRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  private warmRefillFailures = 0;
   private readonly reservedPorts = new Set<number>();
   private reaperTimer: ReturnType<typeof setInterval> | null = null;
   private closed = false;
@@ -235,6 +237,7 @@ export class MicrosandboxProvider implements ConversationTargetProvider {
             throw new Error("MicrosandboxProvider closed during spawn");
           }
           this.conversationMap.set(conversationId, sandbox);
+          this.refillWarmPool();
           return sandbox;
         })
         .finally(() => {
@@ -281,6 +284,7 @@ export class MicrosandboxProvider implements ConversationTargetProvider {
             throw new Error("MicrosandboxProvider closed during spawn");
           }
           this.pendingMap.set(requestId, sandbox);
+          this.refillWarmPool();
           return sandbox;
         })
         .finally(() => {
@@ -360,6 +364,10 @@ export class MicrosandboxProvider implements ConversationTargetProvider {
       clearInterval(this.reaperTimer);
       this.reaperTimer = null;
     }
+    if (this.warmRefillRetryTimer !== null) {
+      clearTimeout(this.warmRefillRetryTimer);
+      this.warmRefillRetryTimer = null;
+    }
 
     const allSandboxes = [
       ...this.conversationMap.values(),
@@ -400,9 +408,15 @@ export class MicrosandboxProvider implements ConversationTargetProvider {
 
   private refillWarmPool(): void {
     if (this.closed || this.warmPoolSize <= 0) return;
+    if (this.warmRefillRetryTimer !== null) {
+      clearTimeout(this.warmRefillRetryTimer);
+      this.warmRefillRetryTimer = null;
+    }
     while (this.warmPool.length + this.warmRefills.size < this.warmPoolSize) {
+      let failed = false;
       const refill = this.spawnSandbox({ warmStandby: true })
         .then((sandbox) => {
+          this.warmRefillFailures = 0;
           if (this.closed) {
             return this.destroySandbox(sandbox, "provider closed during warm refill");
           }
@@ -413,14 +427,34 @@ export class MicrosandboxProvider implements ConversationTargetProvider {
           return undefined;
         })
         .catch((err) => {
+          failed = true;
           if (!this.closed) {
             this.options.logger?.warn(`Warm standby microsandbox refill failed: ${String(err)}`);
           }
         })
         .finally(() => {
           this.warmRefills.delete(refill);
+          if (failed) {
+            this.scheduleWarmRefillRetry();
+          }
         });
       this.warmRefills.add(refill);
+    }
+  }
+
+  private scheduleWarmRefillRetry(): void {
+    if (this.closed || this.warmPoolSize <= 0 || this.warmRefillRetryTimer !== null) return;
+    if (this.warmPool.length + this.warmRefills.size >= this.warmPoolSize) return;
+    const baseDelay = this.options.reconnectBaseDelayMs ?? 1_000;
+    const maxDelay = this.options.reconnectMaxDelayMs ?? 30_000;
+    const delay = Math.min(baseDelay * 2 ** this.warmRefillFailures, maxDelay);
+    this.warmRefillFailures += 1;
+    this.warmRefillRetryTimer = setTimeout(() => {
+      this.warmRefillRetryTimer = null;
+      this.refillWarmPool();
+    }, delay);
+    if (typeof this.warmRefillRetryTimer === "object" && "unref" in this.warmRefillRetryTimer) {
+      this.warmRefillRetryTimer.unref();
     }
   }
 

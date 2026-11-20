@@ -1084,4 +1084,45 @@ describe("SdkMsbRunner detached command launch and diagnostics", () => {
     expect(provider.warmPoolCount).toBe(0);
     expect(mockMsb.removedNames).toHaveLength(2);
   });
+
+  test("warm standby refill retries with backoff after a transient spawn failure", async () => {
+    const mockMsb = createMockMsbRunner();
+    cleanups.push(() => mockMsb.cleanupAll());
+
+    let attempts = 0;
+    const origRun = mockMsb.runner.runSandbox.bind(mockMsb.runner);
+    mockMsb.runner.runSandbox = async (spec) => {
+      attempts += 1;
+      if (attempts === 1) {
+        throw new Error("transient boot failure");
+      }
+      return origRun(spec);
+    };
+
+    const provider = new MicrosandboxProvider({
+      image: "letta-sandbox-worker:latest",
+      lettaApiKey: "test-key",
+      lettaServerUrl: "https://api.letta.com",
+      warmPoolSize: 1,
+      reconnectBaseDelayMs: 25,
+      reconnectMaxDelayMs: 50,
+      idleTimeoutMs: 60_000,
+      reaperIntervalMs: 60_000,
+      msb: mockMsb.runner,
+      logger: silentLogger,
+      onMessage: () => {},
+    });
+    cleanups.push(() => provider.closeAllAsync());
+
+    await provider.ensureReady();
+    expect(provider.warmPoolCount).toBe(0);
+
+    // Backoff retry should recover the standby microVM automatically
+    const deadline = Date.now() + 2_000;
+    while (provider.warmPoolCount < 1 && Date.now() < deadline) {
+      await Bun.sleep(15);
+    }
+    expect(provider.warmPoolCount).toBe(1);
+    expect(attempts).toBe(2);
+  });
 });
