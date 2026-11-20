@@ -138,6 +138,7 @@ export class PassthroughProxy {
       const msbProvider = new MicrosandboxProvider({
         image: this.config.sandbox.image,
         msbBin: this.config.sandbox.msbBin,
+        msbHome: this.config.sandbox.msbHome,
         guestPort: this.config.sandbox.containerPort,
         memoryLimit: this.config.sandbox.memoryLimit,
         cpuLimit: this.config.sandbox.cpuLimit,

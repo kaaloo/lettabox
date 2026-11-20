@@ -2,7 +2,13 @@ import { afterEach, describe, expect, test } from "bun:test";
 import type { Server, ServerWebSocket } from "bun";
 import { deriveListenerInstanceId, loadConfig, type ProxyConfig } from "../src/config.ts";
 import { MicrosandboxProvider } from "../src/microsandbox-provider.ts";
-import { buildMsbRunArgs, type MsbRunner, type MsbRunSpec, normalizeMsbMemory } from "../src/msb-runner.ts";
+import {
+  buildSdkSandbox,
+  type MsbRunner,
+  type MsbRunSpec,
+  parseMsbCpuCount,
+  parseMsbMemoryMiB,
+} from "../src/msb-runner.ts";
 import { MultiplexerProxy } from "../src/proxy.ts";
 
 interface MockMsbInstance {
@@ -119,60 +125,67 @@ afterEach(async () => {
   }
 });
 
-describe("Microsandbox CLI helpers & config", () => {
-  test("normalizeMsbMemory converts Docker-style sizes to msb format", () => {
-    expect(normalizeMsbMemory("1g")).toBe("1G");
-    expect(normalizeMsbMemory("512m")).toBe("512M");
-    expect(normalizeMsbMemory("2GB")).toBe("2G");
-    expect(normalizeMsbMemory("2G")).toBe("2G");
+describe("Microsandbox SDK helpers & config", () => {
+  test("parseMsbMemoryMiB converts Docker-style sizes and bare MiB values", () => {
+    expect(parseMsbMemoryMiB("1g")).toBe(1024);
+    expect(parseMsbMemoryMiB("512m")).toBe(512);
+    expect(parseMsbMemoryMiB("2GB")).toBe(2048);
+    expect(parseMsbMemoryMiB("1024K")).toBe(1);
+    expect(parseMsbMemoryMiB("0.5G")).toBe(512);
+    expect(parseMsbMemoryMiB("2048")).toBe(2048);
+    expect(() => parseMsbMemoryMiB("0G")).toThrow("must be greater than zero");
   });
 
-  test("buildMsbRunArgs constructs detached msb run with secret injection and never leaks secret value in argv", () => {
-    const args = buildMsbRunArgs({
-      name: "letta-msb-abc123",
-      image: "letta-sandbox-worker:latest",
-      hostPort: 49155,
-      guestPort: 4500,
-      cpus: "2",
-      memory: "1g",
-      labels: { "letta-sandbox.managed": "true" },
-      env: { LETTA_WS_TOKEN: "cap-tok-1" },
-      secret: {
-        envName: "LETTA_API_KEY",
-        value: "sk-let-SUPER-SECRET",
-        allowedHosts: ["api.letta.com"],
-        headers: ["Authorization"],
-      },
-      entrypoint: "/bin/sh",
-      command: ["-c", "echo hi"],
-    });
+  test("parseMsbCpuCount accepts only positive integers", () => {
+    expect(parseMsbCpuCount("2")).toBe(2);
+    expect(() => parseMsbCpuCount("1.5")).toThrow("positive integer");
+    expect(() => parseMsbCpuCount("0")).toThrow("positive integer");
+  });
 
-    expect(args).toEqual([
-      "run",
-      "-d",
-      "--name",
-      "letta-msb-abc123",
-      "--replace",
-      "-p",
-      "127.0.0.1:49155:4500",
-      "-c",
-      "2",
-      "-m",
-      "1G",
-      "--label",
-      "letta-sandbox.managed=true",
-      "--secret",
-      "LETTA_API_KEY:headers=[Authorization]@api.letta.com",
-      "-e",
-      "LETTA_WS_TOKEN=cap-tok-1",
-      "--entrypoint",
-      "/bin/sh",
-      "letta-sandbox-worker:latest",
-      "--",
-      "-c",
-      "echo hi",
+  test("buildSdkSandbox maps the native config and scopes secrets to Authorization", async () => {
+    const config = JSON.parse(
+      JSON.stringify(
+        await buildSdkSandbox({
+          name: "letta-msb-abc123",
+          image: "letta-sandbox-worker:latest",
+          hostPort: 49155,
+          guestPort: 4500,
+          cpus: "2",
+          memory: "1g",
+          labels: { "letta-sandbox.managed": "true" },
+          env: { LETTA_WS_TOKEN: "cap-tok-1" },
+          secret: {
+            envName: "LETTA_API_KEY",
+            value: "sk-let-SUPER-SECRET",
+            allowedHosts: ["api.letta.com"],
+            headers: ["Authorization"],
+          },
+          entrypoint: "/bin/sh",
+          command: ["-c", "echo hi"],
+        }).build(),
+      ),
+    );
+
+    expect(config.resources).toMatchObject({ cpus: 2, memoryMib: 1024 });
+    expect(config.runtime.entrypoint).toEqual(["/bin/sh"]);
+    expect(config.runtime.cmd).toEqual(["-c", "echo hi"]);
+    expect(config.labels).toEqual({ "letta-sandbox.managed": "true" });
+    expect(config.env).toEqual([{ key: "LETTA_WS_TOKEN", value: "cap-tok-1" }]);
+    expect(config.network.ports).toEqual([
+      { hostPort: 49155, guestPort: 4500, protocol: "tcp", hostBind: "127.0.0.1" },
     ]);
-    expect(args.join(" ")).not.toContain("sk-let-SUPER-SECRET");
+    expect(config.network.secrets.secrets).toHaveLength(1);
+    expect(config.network.secrets.secrets[0]).toMatchObject({
+      envVar: "LETTA_API_KEY",
+      allowedHosts: [{ exact: "api.letta.com" }],
+      substitution: {
+        headers: true,
+        headerFields: ["Authorization"],
+        query: false,
+        body: false,
+      },
+    });
+    expect(config.env).not.toContainEqual({ key: "LETTA_API_KEY", value: "sk-let-SUPER-SECRET" });
   });
 
   test("loadConfig supports SANDBOX_MODE=microsandbox and msb alias", () => {
@@ -186,15 +199,18 @@ describe("Microsandbox CLI helpers & config", () => {
     expect(cfg1.sandboxMode).toBe("microsandbox");
     expect(cfg1.sandbox.image).toBe("ghcr.io/letta-ai/letta-code:latest");
     expect(cfg1.sandbox.msbBin).toBe("/custom/bin/msb");
+    expect(cfg1.sandbox.msbHome?.endsWith("/.lettabox/microsandbox")).toBe(true);
     expect(cfg1.sandbox.msbSecretInjection).toBe(false);
 
     const cfg2 = loadConfig({
       LETTA_API_KEY: "test-key",
       LETTA_DEVICE_ID: "dev-1",
       SANDBOX_MODE: "microsandbox",
+      MSB_HOME: "/custom/msb-home",
     });
     expect(cfg2.sandboxMode).toBe("microsandbox");
     expect(cfg2.sandbox.image).toBe("ghcr.io/letta-ai/letta-code:latest");
+    expect(cfg2.sandbox.msbHome).toBe("/custom/msb-home");
     expect(cfg2.sandbox.msbSecretInjection).toBe(true);
   });
 });

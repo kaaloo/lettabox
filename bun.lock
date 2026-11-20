@@ -4,6 +4,9 @@
   "workspaces": {
     "": {
       "name": "letta-sandbox",
+      "dependencies": {
+        "microsandbox": "0.7.16",
+      },
       "devDependencies": {
         "@types/bun": "latest",
         "typescript": "^5.8.0",
@@ -11,11 +14,25 @@
     },
   },
   "packages": {
+    "@microsandbox/types": ["@microsandbox/types@0.7.16", "", {}, "sha512-T6u/KpX6NJ558uMykhZpM++4XxaUg/zT/5X7dFBp0EZmlygGOIENajQxvls/60nCoWcrs2jce7W7OvKWVB1qnw=="],
+
+    "@superradcompany/microsandbox-darwin-arm64": ["@superradcompany/microsandbox-darwin-arm64@0.7.16", "", { "os": "darwin", "cpu": "arm64" }, "sha512-CVfS/ABvHXVkPhdOqQT7vHn8VuanYkS95hUBapFtKg91r89a7G6Bnc/n3ZJm1NqbbeuiLa30Tdku112WCHzu1w=="],
+
+    "@superradcompany/microsandbox-linux-arm64-gnu": ["@superradcompany/microsandbox-linux-arm64-gnu@0.7.16", "", { "os": "linux", "cpu": "arm64", "libc": "glibc" }, "sha512-Qg1jA61ymatA1svOpyjdk6svN7dTnAzfO6yWBuLn81u30IJ4hLlTtSwexTyZdwa1IHzL4U2H/314h+Z1sCFo/A=="],
+
+    "@superradcompany/microsandbox-linux-x64-gnu": ["@superradcompany/microsandbox-linux-x64-gnu@0.7.16", "", { "os": "linux", "cpu": "x64", "libc": "glibc" }, "sha512-K/Odpa+tUXIhKrPk5PqmpaUqeiL6VPlD0QfzVz8fDqzaS6SFVZ8JIVK2QS9J0/2s6b5kVlgRb59FGXi8vHLNCA=="],
+
+    "@superradcompany/microsandbox-win32-arm64-msvc": ["@superradcompany/microsandbox-win32-arm64-msvc@0.7.16", "", { "os": "win32", "cpu": "arm64" }, "sha512-LmRB1go0Ra6kq0FAYU4aFT1t2kcGG9JhEQl1S9NvcpRxeC/JhR8B/ObSci5ssZKZRTfYw+B8MA9ya86e8Uw4Ew=="],
+
+    "@superradcompany/microsandbox-win32-x64-msvc": ["@superradcompany/microsandbox-win32-x64-msvc@0.7.16", "", { "os": "win32", "cpu": "x64" }, "sha512-1YU3niRWf+MOt8DqUCd0EnOD1L+xmta62gXXTlm0hjpgQmokPRP2ysMH0U7RxYNayv1OBavE6eo2V/1KH7esGw=="],
+
     "@types/bun": ["@types/bun@1.4.5", "", { "dependencies": { "bun-types": "1.4.5" } }, "sha512-DpgwNI9z0L1S0gtb45QLCWgwCUcMLnsHYMJHQvpNj7erGiCGBvpggltAIeARrtobNMKMuy0UP7i56tKKgwFs/Q=="],
 
     "@types/node": ["@types/node@26.6.6", "", { "dependencies": { "undici-types": "~8.9.0" } }, "sha512-MzQj+8Kx3XI40OmUAE6Qoh58ZMNstNNMwn2nfd3qWsfe7nDNSqJNzes4njhz6AHwrSHOffSLwXU6yb474Q4aog=="],
 
     "bun-types": ["bun-types@1.4.5", "", { "dependencies": { "@types/node": "*", "undici-types": "*" } }, "sha512-ECHn+9dhL3wv0G6u0+7dQvrnaimXiRDxxerYBmhTaLyJEEuvTPWk2Fye3XIf5Y++JIIiHKfQw4Z7V5D8KuiXbg=="],
+
+    "microsandbox": ["microsandbox@0.7.16", "", { "dependencies": { "@microsandbox/types": "0.7.16" }, "optionalDependencies": { "@superradcompany/microsandbox-darwin-arm64": "0.7.16", "@superradcompany/microsandbox-linux-arm64-gnu": "0.7.16", "@superradcompany/microsandbox-linux-x64-gnu": "0.7.16", "@superradcompany/microsandbox-win32-arm64-msvc": "0.7.16", "@superradcompany/microsandbox-win32-x64-msvc": "0.7.16" }, "bin": { "msb": "bin/microsandbox.cjs", "microsandbox": "bin/microsandbox.cjs" } }, "sha512-qSlB+OOb/xZAYkzbnN4ss5BpmSZRaYgm00rg8skWsWrYKhx6jabHYSQmRxo+o0YocOuEAScHMJeBe+vKLQxSqA=="],
 
     "typescript": ["typescript@5.9.3", "", { "bin": { "tsc": "bin/tsc", "tsserver": "bin/tsserver" } }, "sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw=="],
 

@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { createServer } from "node:net";
 import { DownstreamClient } from "./downstream.ts";
-import { CliMsbRunner, type MsbRunner } from "./msb-runner.ts";
+import { SdkMsbRunner, type MsbRunner } from "./msb-runner.ts";
 import { parseJsonObject } from "./protocol.ts";
 import { waitForDownstreamHealth } from "./register.ts";
 import type { ConversationTargetProvider, DownstreamTarget } from "./router.ts";
@@ -27,6 +27,7 @@ export interface ActiveSandboxInfo {
 export interface MicrosandboxProviderOptions {
   image: string;
   msbBin?: string;
+  msbHome?: string;
   guestPort?: number;
   memoryLimit?: string;
   cpuLimit?: string;
@@ -143,7 +144,7 @@ export class MicrosandboxProvider implements ConversationTargetProvider {
 
   constructor(options: MicrosandboxProviderOptions) {
     this.options = options;
-    this.msb = options.msb ?? new CliMsbRunner(options.msbBin);
+    this.msb = options.msb ?? new SdkMsbRunner({ msbBin: options.msbBin, msbHome: options.msbHome });
     this.guestPort = options.guestPort ?? 4500;
     this.idleTimeoutMs = options.idleTimeoutMs ?? 30 * 60_000;
     this.reaperIntervalMs =

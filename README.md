@@ -23,25 +23,26 @@ flowchart TB
 ## Quickstart (One-Line CLI)
 
 Prerequisites:
+- macOS on Apple Silicon, or Linux with KVM
 - [Bun](https://bun.sh)
 - [`letta`](https://github.com/letta-ai/letta-code) CLI (`npm install -g @letta-ai/letta-code`, authenticated via `letta login` or `LETTA_API_KEY`)
-- [`msb`](https://github.com/superradcompany/microsandbox) CLI (Microsandbox)
 
 ```zsh
-# 1. Pre-cache the official multi-arch Letta Code OCI image once
-msb pull ghcr.io/letta-ai/letta-code:latest
-
-# 2. Install & start lettabox (auto-spawns control-plane + loads auth from ~/.letta/settings.json)
+# Install lettabox and the SDK-bundled Microsandbox runtime
 bun install
+
+# Start lettabox (auto-spawns control-plane + loads auth from ~/.letta/settings.json)
 bun run start -- --name my-lettabox
 ```
 
-Select **`my-lettabox`** in `chat.letta.com`. Every conversation lazily boots its own isolated microVM and is automatically reaped after 30 minutes of inactivity (never mid-turn).
+Select **`my-lettabox`** in `chat.letta.com`. Every conversation lazily boots its own isolated microVM and is automatically reaped after 30 minutes of inactivity (never mid-turn). The first boot pulls the OCI image automatically.
 
-Inspect active microVMs at any time:
+Microsandbox runtime and state live in `~/.lettabox/microsandbox` by default, isolated from any existing `~/.microsandbox` installation. Set `MSB_HOME` to use a different home.
+
+Inspect active microVMs at any time with the locally installed SDK CLI shim:
 
 ```zsh
-msb ls --label letta-sandbox.managed=true
+MSB_HOME="$HOME/.lettabox/microsandbox" bunx msb list --label letta-sandbox.managed=true
 ```
 
 ## macOS Menubar Integration
@@ -71,11 +72,12 @@ bun run start -- --help
 | `--idle-timeout` | `SANDBOX_IDLE_TIMEOUT_MS` | `1800000` (30m) | Idle duration before an idle microVM is reaped |
 | `--control-plane-url` | `CONTROL_PLANE_URL` | *(auto-spawned)* | Attach to an existing `letta server --listen` instead of auto-spawning |
 | `--status-port` | `STATUS_PORT` | *(disabled)* | Expose local `http://127.0.0.1:<port>/status` JSON endpoint |
-| `--msb-path` | `MSB_PATH` | `msb` | Path to the `msb` binary |
+| `--msb-path` | `MSB_PATH` | *(SDK-bundled runtime)* | Advanced override for the `msb` runtime binary |
+| — | `MSB_HOME` | `~/.lettabox/microsandbox` | Microsandbox runtime/state home, independent of existing CLI installations |
 | `--letta-bin` | `LETTA_BIN` | `letta` | Path to the `letta` binary for the managed control-plane |
 | `--debug` | `DEBUG_FRAMES` | `false` | Log routed frame envelope summaries and `event_seq` rewrites |
 | — | `LETTA_API_KEY` | `~/.letta/settings.json` | Letta Cloud API key (auto-loaded from `letta login` settings if unset) |
-| — | `MSB_SECRET_INJECTION` | `true` | Inject `LETTA_API_KEY` host-side via `msb --secret` for HTTPS Letta servers |
+| — | `MSB_SECRET_INJECTION` | `true` | Inject `LETTA_API_KEY` at the host network boundary for HTTPS Letta servers |
 | — | `WORKER_URLS` | *(empty)* | Comma-separated static worker URLs when `--mode static` |
 
 ## Documentation
