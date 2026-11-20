@@ -1,3 +1,4 @@
+import { dlopen, FFIType } from "bun:ffi";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import {
@@ -15,6 +16,56 @@ export const EXPECTED_MSB_RUNTIME_VERSION: string = pkg.dependencies.microsandbo
   /^[~^]/,
   "",
 );
+
+interface NativeEnvLib {
+  setenv: (name: Buffer, value: Buffer, overwrite: number) => number;
+  unsetenv: (name: Buffer) => number;
+}
+
+let cachedNativeEnvLib: NativeEnvLib | null | undefined;
+
+function getNativeEnvLib(): NativeEnvLib | null {
+  if (cachedNativeEnvLib !== undefined) return cachedNativeEnvLib;
+  if (process.platform !== "darwin" && process.platform !== "linux") {
+    cachedNativeEnvLib = null;
+    return null;
+  }
+  try {
+    const libName = process.platform === "darwin" ? "libSystem.B.dylib" : "libc.so.6";
+    const lib = dlopen(libName, {
+      setenv: { args: [FFIType.cstring, FFIType.cstring, FFIType.i32], returns: FFIType.i32 },
+      unsetenv: { args: [FFIType.cstring], returns: FFIType.i32 },
+    });
+    cachedNativeEnvLib = {
+      setenv: (name, value, overwrite) => lib.symbols.setenv(name, value, overwrite),
+      unsetenv: (name) => lib.symbols.unsetenv(name),
+    };
+  } catch {
+    cachedNativeEnvLib = null;
+  }
+  return cachedNativeEnvLib;
+}
+
+/**
+ * Bun's `process.env` mutations do not propagate to the native C `environ` read by
+ * Rust N-API addons (`std::env::var`). Mirror runtime env updates via libc `setenv`
+ * so `microsandbox`'s native addon sees `MSB_HOME`, `MSB_PATH`, and `MSB_LIBKRUNFW_PATH`.
+ */
+export function setNativeProcessEnv(key: string, value: string): void {
+  process.env[key] = value;
+  const lib = getNativeEnvLib();
+  if (lib) {
+    lib.setenv(Buffer.from(`${key}\0`), Buffer.from(`${value}\0`), 1);
+  }
+}
+
+export function unsetNativeProcessEnv(key: string): void {
+  delete process.env[key];
+  const lib = getNativeEnvLib();
+  if (lib) {
+    lib.unsetenv(Buffer.from(`${key}\0`));
+  }
+}
 
 export interface MsbRunSpec {
   name: string;
@@ -131,11 +182,13 @@ export class SdkMsbRunner implements MsbRunner {
   private readonly explicitMsbBin?: string;
   private readonly expectedVersion: string;
   private readonly env: Record<string, string | undefined>;
+  private readonly mirrorToNativeEnv: boolean;
   private readonly runtimeOps: SdkRuntimeOps;
   private readonly logger?: SdkMsbRunnerLogger;
   private readyPromise: Promise<ResolvedRuntime> | null = null;
 
   constructor(options: SdkMsbRunnerOptions = {}) {
+    this.mirrorToNativeEnv = options.env === undefined;
     this.env = options.env ?? process.env;
     this.msbHome =
       options.msbHome?.trim() ||
@@ -179,14 +232,22 @@ export class SdkMsbRunner implements MsbRunner {
     }
   }
 
+  private setEnvVar(key: string, value: string): void {
+    if (this.mirrorToNativeEnv) {
+      setNativeProcessEnv(key, value);
+    } else {
+      this.env[key] = value;
+    }
+  }
+
   private pinRuntimeEnv(resolved: ResolvedRuntime): void {
-    this.env.MSB_HOME = this.msbHome;
-    this.env.MSB_PATH = resolved.msbPath;
-    this.env.MSB_LIBKRUNFW_PATH = resolved.libkrunfwPath;
+    this.setEnvVar("MSB_HOME", this.msbHome);
+    this.setEnvVar("MSB_PATH", resolved.msbPath);
+    this.setEnvVar("MSB_LIBKRUNFW_PATH", resolved.libkrunfwPath);
   }
 
   private async resolveOrInstallMatchingRuntime(): Promise<ResolvedRuntime> {
-    this.env.MSB_HOME = this.msbHome;
+    this.setEnvVar("MSB_HOME", this.msbHome);
 
     if (this.explicitMsbBin) {
       const resolved = this.runtimeOps.resolveRuntime({
@@ -200,6 +261,9 @@ export class SdkMsbRunner implements MsbRunner {
         );
       }
       this.pinRuntimeEnv(resolved);
+      this.logger?.info(
+        `Microsandbox runtime ${this.expectedVersion} ready (${resolved.origin}: ${resolved.msbPath})`,
+      );
       return resolved;
     }
 
@@ -214,6 +278,9 @@ export class SdkMsbRunner implements MsbRunner {
       const version = await this.runtimeOps.resolveRuntimeVersion(existing.msbPath);
       if (version === this.expectedVersion) {
         this.pinRuntimeEnv(existing);
+        this.logger?.info(
+          `Microsandbox runtime ${this.expectedVersion} ready (${existing.origin}: ${existing.msbPath})`,
+        );
         return existing;
       }
       this.logger?.warn(
@@ -236,7 +303,9 @@ export class SdkMsbRunner implements MsbRunner {
       );
     }
     this.pinRuntimeEnv(installed);
-    this.logger?.info(`Microsandbox runtime ${this.expectedVersion} ready at ${installed.msbPath}`);
+    this.logger?.info(
+      `Microsandbox runtime ${this.expectedVersion} ready (${installed.origin}: ${installed.msbPath})`,
+    );
     return installed;
   }
 }

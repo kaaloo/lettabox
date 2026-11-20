@@ -677,4 +677,22 @@ describe("SdkMsbRunner runtime version matching", () => {
     );
     expect(installCalls).toBe(0);
   });
+
+  test("setNativeProcessEnv propagates MSB_PATH to the native microsandbox N-API addon", async () => {
+    const { resolveRuntime } = await import("microsandbox");
+    const { setNativeProcessEnv, unsetNativeProcessEnv } = await import("../src/msb-runner.ts");
+
+    const prevPath = process.env.MSB_PATH;
+    const prevFw = process.env.MSB_LIBKRUNFW_PATH;
+    try {
+      setNativeProcessEnv("MSB_PATH", "/nonexistent/lettabox-native-env-check");
+      unsetNativeProcessEnv("MSB_LIBKRUNFW_PATH");
+      expect(() => resolveRuntime()).toThrow("/nonexistent/lettabox-native-env-check");
+    } finally {
+      if (prevPath !== undefined) setNativeProcessEnv("MSB_PATH", prevPath);
+      else unsetNativeProcessEnv("MSB_PATH");
+      if (prevFw !== undefined) setNativeProcessEnv("MSB_LIBKRUNFW_PATH", prevFw);
+      else unsetNativeProcessEnv("MSB_LIBKRUNFW_PATH");
+    }
+  });
 });
