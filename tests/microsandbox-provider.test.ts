@@ -9,6 +9,7 @@ import {
   parseMsbCpuCount,
   parseMsbMemoryMiB,
   resolveMsbLaunchCommand,
+  type SdkImageOps,
   SdkMsbRunner,
   type SdkRuntimeOps,
   type SdkSandboxOps,
@@ -712,6 +713,79 @@ describe("SdkMsbRunner detached command launch and diagnostics", () => {
     },
   };
 
+  const cachedImageOps: SdkImageOps = {
+    isCached: async () => true,
+    pull: async () => {
+      throw new Error("should not pull");
+    },
+  };
+
+  test("ensureReady skips image pull when image is already cached", async () => {
+    let isCachedCalls = 0;
+    let pullCalls = 0;
+    const runner = new SdkMsbRunner({
+      msbHome: "/home/test/.lettabox/microsandbox",
+      image: "ghcr.io/letta-ai/letta-code:latest",
+      expectedVersion: "0.7.16",
+      env: {},
+      runtimeOps: readyRuntimeOps,
+      imageOps: {
+        isCached: async () => {
+          isCachedCalls += 1;
+          return true;
+        },
+        pull: async () => {
+          pullCalls += 1;
+        },
+      },
+      logger: silentLogger,
+    });
+
+    await runner.ensureReady();
+    await runner.ensureReady();
+    expect(isCachedCalls).toBe(1);
+    expect(pullCalls).toBe(0);
+  });
+
+  test("ensureReady pulls uncached image using the resolved msb binary and pinned env", async () => {
+    const pullCalls: Array<{
+      msbPath: string;
+      reference: string;
+      msbHome?: string;
+      msbPathEnv?: string;
+    }> = [];
+    const runner = new SdkMsbRunner({
+      msbHome: "/home/test/.lettabox/microsandbox",
+      image: "ghcr.io/letta-ai/letta-code:latest",
+      expectedVersion: "0.7.16",
+      env: {},
+      runtimeOps: readyRuntimeOps,
+      imageOps: {
+        isCached: async () => false,
+        pull: async (msbPath, reference, env) => {
+          pullCalls.push({
+            msbPath,
+            reference,
+            msbHome: env.MSB_HOME,
+            msbPathEnv: env.MSB_PATH,
+          });
+        },
+      },
+      logger: silentLogger,
+    });
+
+    await runner.ensureReady();
+    await runner.ensureReady("ghcr.io/letta-ai/letta-code:latest");
+    expect(pullCalls).toEqual([
+      {
+        msbPath: "/home/test/.lettabox/microsandbox/bin/msb",
+        reference: "ghcr.io/letta-ai/letta-code:latest",
+        msbHome: "/home/test/.lettabox/microsandbox",
+        msbPathEnv: "/home/test/.lettabox/microsandbox/bin/msb",
+      },
+    ]);
+  });
+
   test("resolveMsbLaunchCommand combines entrypoint and command or splits command-only specs", () => {
     expect(
       resolveMsbLaunchCommand({
@@ -781,6 +855,7 @@ describe("SdkMsbRunner detached command launch and diagnostics", () => {
       expectedVersion: "0.7.16",
       env: {},
       runtimeOps: readyRuntimeOps,
+      imageOps: cachedImageOps,
       sandboxOps,
       logger: silentLogger,
     });
@@ -826,6 +901,7 @@ describe("SdkMsbRunner detached command launch and diagnostics", () => {
       expectedVersion: "0.7.16",
       env: {},
       runtimeOps: readyRuntimeOps,
+      imageOps: cachedImageOps,
       sandboxOps,
       logger: silentLogger,
     });
@@ -876,6 +952,7 @@ describe("SdkMsbRunner detached command launch and diagnostics", () => {
       expectedVersion: "0.7.16",
       env: {},
       runtimeOps: readyRuntimeOps,
+      imageOps: cachedImageOps,
       sandboxOps,
       logger: silentLogger,
     });
@@ -914,5 +991,27 @@ describe("SdkMsbRunner detached command launch and diagnostics", () => {
     expect(errors.some((line) => line.includes("[guest logs]") && line.includes("boom"))).toBe(
       true,
     );
+  });
+
+  test("MicrosandboxProvider reports busy=true while spawning a cold microVM and false once ready", async () => {
+    const mockMsb = createMockMsbRunner({ spawnDelayMs: 30 });
+    cleanups.push(() => mockMsb.cleanupAll());
+
+    const busyTransitions: boolean[] = [];
+    const provider = new MicrosandboxProvider({
+      image: "letta-sandbox-worker:latest",
+      lettaApiKey: "test-key",
+      lettaServerUrl: "https://api.letta.com",
+      idleTimeoutMs: 60_000,
+      reaperIntervalMs: 60_000,
+      msb: mockMsb.runner,
+      logger: silentLogger,
+      onMessage: () => {},
+      onBusyChange: (busy) => busyTransitions.push(busy),
+    });
+    cleanups.push(() => provider.closeAllAsync());
+
+    await provider.acquireForConversation("conv-spin");
+    expect(busyTransitions).toEqual([true, false]);
   });
 });

@@ -149,6 +149,7 @@ export class MicrosandboxProvider implements ConversationTargetProvider {
       new SdkMsbRunner({
         msbBin: options.msbBin,
         msbHome: options.msbHome,
+        image: options.image,
         logger: options.logger,
       });
     this.guestPort = options.guestPort ?? 4500;
@@ -165,7 +166,7 @@ export class MicrosandboxProvider implements ConversationTargetProvider {
   }
 
   async ensureReady(): Promise<void> {
-    await this.msb.ensureReady?.();
+    await this.msb.ensureReady?.(this.options.image);
   }
 
   get activeCount(): number {
@@ -216,8 +217,10 @@ export class MicrosandboxProvider implements ConversationTargetProvider {
         })
         .finally(() => {
           this.inFlightSpawns.delete(spawnKey);
+          this.notifyBusyChange();
         });
       this.inFlightSpawns.set(spawnKey, inFlight);
+      this.notifyBusyChange();
     }
 
     const sandbox = await inFlight;
@@ -254,8 +257,10 @@ export class MicrosandboxProvider implements ConversationTargetProvider {
         })
         .finally(() => {
           this.inFlightSpawns.delete(spawnKey);
+          this.notifyBusyChange();
         });
       this.inFlightSpawns.set(spawnKey, inFlight);
+      this.notifyBusyChange();
     }
 
     const sandbox = await inFlight;
@@ -511,7 +516,7 @@ export class MicrosandboxProvider implements ConversationTargetProvider {
   }
 
   private notifyBusyChange(): void {
-    const anyBusy = this.listActiveSandboxes().some((s) => s.busy);
+    const anyBusy = this.inFlightSpawns.size > 0 || this.listActiveSandboxes().some((s) => s.busy);
     if (anyBusy !== this.lastAnyBusy) {
       this.lastAnyBusy = anyBusy;
       this.options.onBusyChange?.(anyBusy);
