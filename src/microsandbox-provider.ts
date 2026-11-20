@@ -188,7 +188,7 @@ export class MicrosandboxProvider implements ConversationTargetProvider {
   }
 
   get warmPoolCount(): number {
-    return this.warmPool.filter((s) => !s.stopping && !s.client.isClosed).length;
+    return this.warmPool.filter((s) => !s.stopping && s.client.isOpen).length;
   }
 
   listActiveSandboxes(): ActiveSandboxInfo[] {
@@ -391,8 +391,8 @@ export class MicrosandboxProvider implements ConversationTargetProvider {
     while (this.warmPool.length > 0) {
       const candidate = this.warmPool.shift();
       if (!candidate) break;
-      if (candidate.stopping || candidate.client.isClosed) {
-        void this.destroySandbox(candidate, "evicted dead warm standby");
+      if (candidate.stopping || !candidate.client.isOpen) {
+        void this.destroySandbox(candidate, "evicted disconnected warm standby");
         continue;
       }
       candidate.conversationId = scope.conversationId;

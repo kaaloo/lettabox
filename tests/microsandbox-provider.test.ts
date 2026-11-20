@@ -1175,4 +1175,43 @@ describe("SdkMsbRunner detached command launch and diagnostics", () => {
     await provider.closeAllAsync();
     expect(mockMsb.removedNames).toHaveLength(mockMsb.spawnedSpecs.length);
   });
+
+  test("discards a disconnected warm standby and spawns a healthy replacement on acquire", async () => {
+    const mockMsb = createMockMsbRunner();
+    cleanups.push(() => mockMsb.cleanupAll());
+
+    const provider = new MicrosandboxProvider({
+      image: "letta-sandbox-worker:latest",
+      lettaApiKey: "test-key",
+      lettaServerUrl: "https://api.letta.com",
+      warmPoolSize: 1,
+      reconnectBaseDelayMs: 5_000,
+      reconnectMaxDelayMs: 10_000,
+      maxReconnectAttempts: 3,
+      idleTimeoutMs: 60_000,
+      reaperIntervalMs: 60_000,
+      msb: mockMsb.runner,
+      logger: silentLogger,
+      onMessage: () => {},
+    });
+    cleanups.push(() => provider.closeAllAsync());
+
+    await provider.ensureReady();
+    expect(provider.warmPoolCount).toBe(1);
+    const [standby] = [...mockMsb.sandboxes.values()];
+    if (!standby) throw new Error("expected a warm standby sandbox");
+
+    // Drop the standby's socket while reconnect is still pending (isOpen=false, isClosed=false)
+    standby.server.stop(true);
+    const dropDeadline = Date.now() + 2_000;
+    while (provider.warmPoolCount > 0 && Date.now() < dropDeadline) {
+      await Bun.sleep(10);
+    }
+    expect(provider.warmPoolCount).toBe(0);
+
+    // Acquire must discard the disconnected standby and return a fresh healthy target
+    const target = await provider.acquireForConversation("conv-fresh");
+    expect(target.id).not.toBe(`msb-${standby.name.slice("letta-msb-".length)}`);
+    expect(mockMsb.removedNames).toContain(standby.name);
+  });
 });
