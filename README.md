@@ -26,15 +26,14 @@ Prerequisites:
 
 - macOS on Apple Silicon, or Linux with KVM
 - [Bun](https://bun.sh) 1.4.4
-- Node.js 24 and [pnpm](https://pnpm.io) 12.20.0 for dependency management
 - [`letta`](https://github.com/letta-ai/letta-code) CLI (`npm install -g @letta-ai/letta-code`, authenticated via `letta login` or `LETTA_API_KEY`)
 
 ```sh
 # Install lettabox and the SDK-bundled Microsandbox runtime
-pnpm install --frozen-lockfile
+bun install --frozen-lockfile
 
 # Start lettabox (auto-spawns the control plane and loads auth from ~/.letta/settings.json)
-pnpm start -- --name my-lettabox
+bun run start -- --name my-lettabox
 ```
 
 Select **`my-lettabox`** in `chat.letta.com`. Every conversation lazily boots its own isolated microVM and is automatically reaped after 30 minutes of inactivity (never mid-turn). The first boot pulls the OCI image automatically.
@@ -52,7 +51,7 @@ MSB_HOME="$HOME/.lettabox/microsandbox" bunx msb list --label letta-sandbox.mana
 `lettabox` exposes an optional local HTTP status server for integration with desktop wrappers such as [`letta-server-macos-menubar`](https://tangled.org/kaaloo.tngl.sh/letta-server-macos-menubar):
 
 ```sh
-pnpm start -- --name my-mac --status-port 4590
+bun run start -- --name my-mac --status-port 4590
 ```
 
 - `GET http://127.0.0.1:4590/healthz` → `200 ok`
@@ -63,7 +62,7 @@ The status server has no authentication and must remain bound to its loopback-on
 ## CLI Options & Environment Variables
 
 ```sh
-pnpm start -- --help
+bun run start -- --help
 ```
 
 | Flag                  | Environment Variable      | Default                              | Description                                                                 |
@@ -105,8 +104,7 @@ pnpm start -- --help
 Install the pinned package manager and dependencies, then activate both hook stages. The Gitleaks hook requires Go; install the pre-commit CLI with [uv](https://docs.astral.sh/uv/).
 
 ```sh
-npm install --global pnpm@12.20.0
-pnpm install --frozen-lockfile
+bun install --frozen-lockfile
 uv tool install pre-commit
 pre-commit install --install-hooks
 ```
@@ -114,13 +112,13 @@ pre-commit install --install-hooks
 Run the same quality gates as CI:
 
 ```sh
-pnpm exec biome ci .
-pnpm typecheck
-pnpm test
-pnpm smoke
+bunx biome ci .
+bun run typecheck
+bun test
+bun run smoke
 ```
 
-Use `pnpm check --write` to apply Biome's safe formatting and lint fixes. There is no separate application build step; Bun executes the TypeScript CLI directly.
+Use `bun run check --write` to apply Biome's safe formatting and lint fixes. There is no separate application build step; Bun executes the TypeScript CLI directly.
 
 Verify the security hooks explicitly:
 
@@ -133,7 +131,7 @@ pre-commit run cve-lite --all-files --hook-stage pre-push
 
 Pull requests and `main` pushes run Biome, TypeScript, Bun tests, a CLI smoke check, full-history Gitleaks, and OSV-Scanner. OSV also runs weekly; while SARIF upload is disabled, findings remain available in workflow logs and artifacts.
 
-pnpm enforces a seven-day minimum release age, denies unapproved dependency build scripts, and verifies lockfile trust. Dependabot covers pnpm, pre-commit, and GitHub Actions with the same cooldown. The repository owner reviews dependency and vulnerability reports weekly; automatic merging is disabled.
+Bun enforces a seven-day minimum release age for new dependency resolutions, saves exact versions, and restricts lifecycle scripts to `trustedDependencies`. Dependabot covers Bun, pre-commit, and GitHub Actions with the same cooldown. The repository owner reviews dependency and vulnerability reports weekly; automatic merging is disabled.
 
 release-please maintains release PRs after merges to `main`, starting from the existing `0.1.0` baseline. Release PRs use the same review and merge policy as other changes; setup does not publish artifacts automatically.
 

@@ -7,7 +7,7 @@
   "bin": {
     "lettabox": "./src/cli.ts"
   },
-  "packageManager": "pnpm@12.20.0",
+  "packageManager": "bun@1.4.4",
   "scripts": {
     "dev": "bun --watch src/cli.ts",
     "start": "bun run src/cli.ts",
@@ -24,5 +24,8 @@
   },
   "dependencies": {
     "microsandbox": "0.7.16"
-  }
+  },
+  "trustedDependencies": [
+    "better-sqlite3"
+  ]
 }

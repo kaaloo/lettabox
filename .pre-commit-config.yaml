@@ -9,7 +9,7 @@ repos:
     hooks:
       - id: cve-lite
         name: CVE Lite (Node dependency lockfiles)
-        entry: pnpm exec cve-lite . --fail-on high
+        entry: bun run cve-lite . --fail-on high
         language: system
         pass_filenames: false
         always_run: true
