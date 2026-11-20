@@ -211,4 +211,43 @@ describe("StatusServer", () => {
       await cp.stop();
     }
   });
+
+  test("spawnManagedControlPlane invokes onUnexpectedExit when child crashes, not on stop()", async () => {
+    const dir = makeTempDir();
+    const crashingBin = join(dir, "crash-letta.sh");
+    writeFileSync(crashingBin, "#!/usr/bin/env bash\nexit 42\n", { mode: 0o755 });
+
+    const crashCodes: number[] = [];
+    const cp = await spawnManagedControlPlane({
+      lettaBin: crashingBin,
+      lettaApiKey: "test-key",
+      lettaServerUrl: "https://api.letta.com",
+      onUnexpectedExit: (code) => {
+        crashCodes.push(code);
+      },
+    });
+
+    const deadline = Date.now() + 2_000;
+    while (crashCodes.length === 0 && Date.now() < deadline) {
+      await Bun.sleep(20);
+    }
+    expect(crashCodes).toEqual([42]);
+    await cp.stop();
+
+    // Intentional stop must NOT trigger onUnexpectedExit
+    const sleepingBin = join(dir, "sleep-letta.sh");
+    writeFileSync(sleepingBin, "#!/usr/bin/env bash\nsleep 30\n", { mode: 0o755 });
+    const cleanCodes: number[] = [];
+    const cp2 = await spawnManagedControlPlane({
+      lettaBin: sleepingBin,
+      lettaApiKey: "test-key",
+      lettaServerUrl: "https://api.letta.com",
+      onUnexpectedExit: (code) => {
+        cleanCodes.push(code);
+      },
+    });
+    await cp2.stop();
+    await Bun.sleep(30);
+    expect(cleanCodes).toEqual([]);
+  });
 });

@@ -192,6 +192,12 @@ export async function runCli(
               console.error(`[lettabox:control-plane] ${line}`);
             }
           : undefined,
+        onUnexpectedExit: (exitCode) => {
+          console.error(
+            `[lettabox] Managed control-plane exited unexpectedly (code ${exitCode}), shutting down...`,
+          );
+          void cleanupAndExit(1);
+        },
       });
       mergedEnv.CONTROL_PLANE_URL = managedControlPlane.wsUrl;
     }

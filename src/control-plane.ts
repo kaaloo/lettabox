@@ -7,6 +7,7 @@ export interface ManagedControlPlaneOptions {
   allocatePort?: () => Promise<number>;
   onStdout?: (line: string) => void;
   onStderr?: (line: string) => void;
+  onUnexpectedExit?: (exitCode: number) => void;
 }
 
 export interface RunningControlPlane {
@@ -62,6 +63,13 @@ export async function spawnManagedControlPlane(
   }
 
   let stopped = false;
+
+  void proc.exited.then((exitCode) => {
+    if (!stopped) {
+      stopped = true;
+      options.onUnexpectedExit?.(exitCode);
+    }
+  });
 
   return {
     port,
