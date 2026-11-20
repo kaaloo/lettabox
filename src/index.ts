@@ -1,19 +1,23 @@
 import { loadConfig } from "./config.ts";
-import { PassthroughProxy } from "./proxy.ts";
+import { MultiplexerProxy } from "./proxy.ts";
 
 async function main(): Promise<void> {
   const config = loadConfig();
-  const proxy = new PassthroughProxy({
+  const proxy = new MultiplexerProxy({
     config,
     onTerminalClose: () => {
       process.exit(0);
     },
   });
 
+  let shuttingDown = false;
   const shutdown = (signal: string) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
     console.log(`[letta-sandbox] Received ${signal}, shutting down...`);
-    proxy.stop();
-    process.exit(0);
+    void proxy.stopAsync().finally(() => {
+      process.exit(0);
+    });
   };
 
   process.on("SIGINT", () => shutdown("SIGINT"));

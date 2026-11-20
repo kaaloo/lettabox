@@ -3,6 +3,21 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir, hostname } from "node:os";
 import { dirname, join } from "node:path";
 
+export type SandboxMode = "static" | "docker";
+
+export interface SandboxConfig {
+  image: string;
+  runtime?: string;
+  containerPort: number;
+  idleTimeoutMs: number;
+  reaperIntervalMs: number;
+  startTimeoutMs: number;
+  memoryLimit: string;
+  cpuLimit: string;
+  pidsLimit: number;
+  network?: string;
+}
+
 export interface ProxyConfig {
   lettaApiKey: string;
   lettaServerUrl: string;
@@ -12,6 +27,8 @@ export interface ProxyConfig {
   downstreamWsUrl: string;
   downstreamHttpUrl: string;
   downstreamWsToken?: string;
+  sandboxMode: SandboxMode;
+  sandbox: SandboxConfig;
   workerWsUrls: string[];
   workerWsToken?: string;
   heartbeatIntervalMs: number;
@@ -72,6 +89,16 @@ function parseUrlList(value: string | undefined): string[] {
     .filter((entry) => entry.length > 0);
 }
 
+function parseSandboxMode(value: string | undefined): SandboxMode {
+  if (!value || value.trim() === "" || value.trim() === "static") {
+    return "static";
+  }
+  if (value.trim() === "docker") {
+    return "docker";
+  }
+  throw new Error(`Invalid SANDBOX_MODE: ${value} (expected "static" or "docker")`);
+}
+
 export function loadConfig(env: Record<string, string | undefined> = process.env): ProxyConfig {
   const lettaApiKey = env.LETTA_API_KEY?.trim();
   if (!lettaApiKey) {
@@ -107,6 +134,11 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     workerWsToken = downstreamWsToken;
   }
 
+  const sandboxMode = parseSandboxMode(env.SANDBOX_MODE);
+  const runtimeRaw = env.SANDBOX_RUNTIME;
+  const runtime =
+    runtimeRaw === undefined ? "runsc" : runtimeRaw.trim().length > 0 ? runtimeRaw.trim() : undefined;
+
   return {
     lettaApiKey,
     lettaServerUrl,
@@ -116,6 +148,31 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     downstreamWsUrl,
     downstreamHttpUrl,
     downstreamWsToken: downstreamWsToken || undefined,
+    sandboxMode,
+    sandbox: {
+      image: env.SANDBOX_IMAGE?.trim() || "letta-sandbox-worker:latest",
+      runtime,
+      containerPort: parsePositiveInt(env.SANDBOX_CONTAINER_PORT, 4500, "SANDBOX_CONTAINER_PORT"),
+      idleTimeoutMs: parsePositiveInt(
+        env.SANDBOX_IDLE_TIMEOUT_MS,
+        15 * 60_000,
+        "SANDBOX_IDLE_TIMEOUT_MS",
+      ),
+      reaperIntervalMs: parsePositiveInt(
+        env.SANDBOX_REAPER_INTERVAL_MS,
+        30_000,
+        "SANDBOX_REAPER_INTERVAL_MS",
+      ),
+      startTimeoutMs: parsePositiveInt(
+        env.SANDBOX_START_TIMEOUT_MS,
+        30_000,
+        "SANDBOX_START_TIMEOUT_MS",
+      ),
+      memoryLimit: env.SANDBOX_MEMORY_LIMIT?.trim() || "1g",
+      cpuLimit: env.SANDBOX_CPU_LIMIT?.trim() || "1",
+      pidsLimit: parsePositiveInt(env.SANDBOX_PIDS_LIMIT, 256, "SANDBOX_PIDS_LIMIT"),
+      network: env.SANDBOX_NETWORK?.trim() || undefined,
+    },
     workerWsUrls,
     workerWsToken: workerWsToken || undefined,
     heartbeatIntervalMs: parsePositiveInt(

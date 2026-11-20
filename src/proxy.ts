@@ -1,5 +1,7 @@
 import type { ProxyConfig } from "./config.ts";
+import type { DockerRunner } from "./docker-runner.ts";
 import { DownstreamClient } from "./downstream.ts";
+import { DockerGvisorProvider } from "./gvisor-provider.ts";
 import { fetchAppServerInfo, waitForDownstreamHealth } from "./register.ts";
 import {
   type ConversationTargetProvider,
@@ -27,6 +29,7 @@ export interface PassthroughProxyOptions {
   config: ProxyConfig;
   logger?: Logger;
   fetchImpl?: typeof fetch;
+  docker?: DockerRunner;
   onTerminalClose?: (reason: string) => void;
   onUpstreamReady?: () => void;
 }
@@ -35,11 +38,13 @@ export class PassthroughProxy {
   private readonly config: ProxyConfig;
   private readonly logger: Logger;
   private readonly fetchImpl?: typeof fetch;
+  private readonly docker?: DockerRunner;
   private readonly onTerminalClose?: (reason: string) => void;
   private readonly onUpstreamReady?: () => void;
 
   private controlPlane: DownstreamClient | null = null;
   private conversationProvider: ConversationTargetProvider | null = null;
+  private gvisorProvider: DockerGvisorProvider | null = null;
   private router: EnvelopeRouter | null = null;
   private upstream: UpstreamRelayClient | null = null;
   private stopped = false;
@@ -48,6 +53,7 @@ export class PassthroughProxy {
     this.config = options.config;
     this.logger = options.logger ?? defaultLogger;
     this.fetchImpl = options.fetchImpl;
+    this.docker = options.docker;
     this.onTerminalClose = options.onTerminalClose;
     this.onUpstreamReady = options.onUpstreamReady;
   }
@@ -71,8 +77,12 @@ export class PassthroughProxy {
     const version = appServerInfo.lettaCodeVersion ?? appServerInfo.version ?? "unknown";
     const cmdCount = (appServerInfo.supported_commands ?? appServerInfo.supportedCommands ?? [])
       .length;
+    const modeDesc =
+      this.config.sandboxMode === "docker"
+        ? `docker sandbox mode (image=${this.config.sandbox.image}, runtime=${this.config.sandbox.runtime || "default"})`
+        : `${this.config.workerWsUrls.length} configured worker(s)`;
     this.logger.info(
-      `Control-plane ready (letta-code ${version}, ${cmdCount} supported_commands, ${this.config.workerWsUrls.length} configured worker(s))`,
+      `Control-plane ready (letta-code ${version}, ${cmdCount} supported_commands, ${modeDesc})`,
     );
 
     if (this.stopped) return;
@@ -109,30 +119,58 @@ export class PassthroughProxy {
       return;
     }
 
-    const workerPool = new StaticWorkerPool({
-      workerUrls: this.config.workerWsUrls,
-      fallbackTarget: controlTarget,
-      token: this.config.workerWsToken,
-      reconnectBaseDelayMs: this.config.reconnectBaseDelayMs,
-      reconnectMaxDelayMs: this.config.reconnectMaxDelayMs,
-      onMessage: (target, raw) => {
-        this.router?.handleDownstreamMessage(target, raw);
-      },
-      onWorkerOpen: (workerId, url) => {
-        this.logger.info(`Connected to ${workerId} (${url})`);
-      },
-      onWorkerClose: (workerId, code, reason) => {
-        this.logger.warn(`${workerId} closed (${code}: ${reason || "no reason"})`);
-      },
-      onWorkerError: (workerId, err) => {
-        this.logger.error(`${workerId} error: ${String(err)}`);
-      },
-    });
-    this.conversationProvider = workerPool;
+    let provider: ConversationTargetProvider;
+    if (this.config.sandboxMode === "docker") {
+      const gvisor = new DockerGvisorProvider({
+        image: this.config.sandbox.image,
+        runtime: this.config.sandbox.runtime,
+        containerPort: this.config.sandbox.containerPort,
+        memoryLimit: this.config.sandbox.memoryLimit,
+        cpuLimit: this.config.sandbox.cpuLimit,
+        pidsLimit: this.config.sandbox.pidsLimit,
+        network: this.config.sandbox.network,
+        lettaApiKey: this.config.lettaApiKey,
+        lettaServerUrl: this.config.lettaServerUrl,
+        idleTimeoutMs: this.config.sandbox.idleTimeoutMs,
+        reaperIntervalMs: this.config.sandbox.reaperIntervalMs,
+        startTimeoutMs: this.config.sandbox.startTimeoutMs,
+        reconnectBaseDelayMs: this.config.reconnectBaseDelayMs,
+        reconnectMaxDelayMs: this.config.reconnectMaxDelayMs,
+        docker: this.docker,
+        fetchImpl: this.fetchImpl,
+        logger: this.logger,
+        onMessage: (target, raw) => {
+          this.router?.handleDownstreamMessage(target, raw);
+        },
+      });
+      this.gvisorProvider = gvisor;
+      provider = gvisor;
+    } else {
+      provider = new StaticWorkerPool({
+        workerUrls: this.config.workerWsUrls,
+        fallbackTarget: controlTarget,
+        token: this.config.workerWsToken,
+        reconnectBaseDelayMs: this.config.reconnectBaseDelayMs,
+        reconnectMaxDelayMs: this.config.reconnectMaxDelayMs,
+        onMessage: (target, raw) => {
+          this.router?.handleDownstreamMessage(target, raw);
+        },
+        onWorkerOpen: (workerId, url) => {
+          this.logger.info(`Connected to ${workerId} (${url})`);
+        },
+        onWorkerClose: (workerId, code, reason) => {
+          this.logger.warn(`${workerId} closed (${code}: ${reason || "no reason"})`);
+        },
+        onWorkerError: (workerId, err) => {
+          this.logger.error(`${workerId} error: ${String(err)}`);
+        },
+      });
+    }
+    this.conversationProvider = provider;
 
     const router = new EnvelopeRouter({
       controlPlane: controlTarget,
-      conversationProvider: workerPool,
+      conversationProvider: provider,
       sendToUpstream: (raw, frameType) => this.upstream?.send(raw, frameType) ?? null,
       debugFrames: this.config.debugFrames,
       logger: this.logger,
@@ -168,8 +206,9 @@ export class PassthroughProxy {
       },
       onTerminalClose: (reason) => {
         this.logger.warn(`Upstream terminal close: ${reason}`);
-        this.stop();
-        this.onTerminalClose?.(reason);
+        void this.stopAsync().finally(() => {
+          this.onTerminalClose?.(reason);
+        });
       },
       onError: (err) => {
         this.logger.error(`Upstream error: ${String(err)}`);
@@ -180,11 +219,20 @@ export class PassthroughProxy {
   }
 
   stop(): void {
+    void this.stopAsync();
+  }
+
+  async stopAsync(): Promise<void> {
     if (this.stopped) return;
     this.stopped = true;
     this.upstream?.close();
     this.upstream = null;
-    this.conversationProvider?.closeAll();
+    if (this.gvisorProvider) {
+      await this.gvisorProvider.closeAllAsync();
+      this.gvisorProvider = null;
+    } else {
+      this.conversationProvider?.closeAll();
+    }
     this.conversationProvider = null;
     this.controlPlane?.close();
     this.controlPlane = null;
