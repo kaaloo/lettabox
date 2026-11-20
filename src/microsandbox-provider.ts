@@ -498,8 +498,11 @@ export class MicrosandboxProvider implements ConversationTargetProvider {
       this.options.logger?.info(`Microsandbox ${id} ready at ${wsUrl}`);
       return sandbox;
     } catch (err) {
+      const guestLogs = await this.msb.readSandboxLogs?.(createdName).catch(() => undefined);
       this.options.logger?.error(
-        `Failed to initialize microsandbox ${createdName}, cleaning up: ${String(err)}`,
+        `Failed to initialize microsandbox ${createdName}, cleaning up: ${String(err)}${
+          guestLogs ? `\n[guest logs]\n${guestLogs}` : ""
+        }`,
       );
       this.reservedPorts.delete(hostPort);
       await this.msb.removeSandbox(createdName).catch(() => {});
