@@ -437,11 +437,15 @@ describe("PassthroughProxy integration", () => {
     cleanups.push(() => downstream.stop(), () => relay.stop());
 
     let readyCount = 0;
+    let disconnectCount = 0;
     const proxy = new PassthroughProxy({
       config: makeConfig(relay.httpUrl, downstream),
       logger: silentLogger,
       onUpstreamReady: () => {
         readyCount += 1;
+      },
+      onUpstreamDisconnect: () => {
+        disconnectCount += 1;
       },
     });
     cleanups.push(() => proxy.stop());
@@ -449,9 +453,11 @@ describe("PassthroughProxy integration", () => {
     await proxy.start();
     await waitFor(() => readyCount === 1);
     expect(relay.registrations).toHaveLength(1);
+    expect(disconnectCount).toBe(0);
 
     relay.closeControl(1008, "Environment not found");
     await waitFor(() => readyCount === 2, 3_000);
+    expect(disconnectCount).toBeGreaterThanOrEqual(1);
     expect(relay.registrations).toHaveLength(2);
   });
 

@@ -132,89 +132,113 @@ export function parseCliArgs(
   };
 }
 
-export async function runCli(argv: string[] = process.argv.slice(2)): Promise<void> {
-  const parsed = parseCliArgs(argv, process.env);
+export interface RunCliOptions {
+  env?: Record<string, string | undefined>;
+  spawnControlPlane?: typeof spawnManagedControlPlane;
+  exit?: (code: number) => void;
+}
+
+export async function runCli(
+  argv: string[] = process.argv.slice(2),
+  options: RunCliOptions = {},
+): Promise<void> {
+  const baseEnv = options.env ?? process.env;
+  const exit = options.exit ?? ((code: number) => process.exit(code));
+  const spawnControlPlane = options.spawnControlPlane ?? spawnManagedControlPlane;
+
+  const parsed = parseCliArgs(argv, baseEnv);
   if (parsed.help) {
     console.log(CLI_HELP);
     return;
   }
 
   const mergedEnv: Record<string, string | undefined> = {
-    ...process.env,
+    ...baseEnv,
     ...parsed.envOverrides,
   };
 
   let managedControlPlane: RunningControlPlane | null = null;
-  if (parsed.autoControlPlane) {
-    // Load early to resolve LETTA_API_KEY (including ~/.letta/settings.json fallback) & LETTA_SERVER_URL
-    const preConfig = loadConfig(mergedEnv);
-    console.log("[lettabox] Starting managed control-plane letta server...");
-    managedControlPlane = await spawnManagedControlPlane({
-      lettaBin: parsed.lettaBin,
-      lettaApiKey: preConfig.lettaApiKey,
-      lettaServerUrl: preConfig.lettaServerUrl,
-      onStderr: (line) => {
-        if (preConfig.debugFrames) {
-          console.error(`[lettabox:control-plane] ${line}`);
-        }
-      },
-    });
-    mergedEnv.CONTROL_PLANE_URL = managedControlPlane.wsUrl;
-  }
-
-  const config = loadConfig(mergedEnv);
-  const startedAt = Date.now();
-  let upstreamReady = false;
   let statusServer: StatusServer | null = null;
-
-  const proxy = new MultiplexerProxy({
-    config,
-    onUpstreamReady: () => {
-      upstreamReady = true;
-    },
-    onTerminalClose: () => {
-      void cleanupAndExit(0);
-    },
-  });
-
-  if (parsed.statusPort !== undefined) {
-    statusServer = startStatusServer({
-      port: parsed.statusPort,
-      getSnapshot: () => ({
-        name: "lettabox",
-        connectionName: config.connectionName,
-        sandboxMode: config.sandboxMode,
-        upstreamReady,
-        uptimeMs: Date.now() - startedAt,
-        activeSandboxes: proxy.listActiveSandboxes(),
-      }),
-    });
-    console.log(`[lettabox] Status endpoint listening at ${statusServer.url}/status`);
-  }
-
+  let proxy: MultiplexerProxy | null = null;
   let shuttingDown = false;
+
   const cleanupAndExit = async (code: number) => {
     if (shuttingDown) return;
     shuttingDown = true;
     statusServer?.stop();
-    await proxy.stopAsync();
+    statusServer = null;
+    if (proxy) {
+      await proxy.stopAsync();
+      proxy = null;
+    }
     if (managedControlPlane) {
       await managedControlPlane.stop();
+      managedControlPlane = null;
     }
-    process.exit(code);
+    exit(code);
   };
 
-  process.on("SIGINT", () => {
-    console.log("[lettabox] Received SIGINT, shutting down...");
-    void cleanupAndExit(0);
-  });
-  process.on("SIGTERM", () => {
-    console.log("[lettabox] Received SIGTERM, shutting down...");
-    void cleanupAndExit(0);
-  });
-
   try {
-    await proxy.start();
+    if (parsed.autoControlPlane) {
+      // Load early to resolve LETTA_API_KEY (including ~/.letta/settings.json fallback) & LETTA_SERVER_URL
+      const preConfig = loadConfig(mergedEnv);
+      console.log("[lettabox] Starting managed control-plane letta server...");
+      managedControlPlane = await spawnControlPlane({
+        lettaBin: parsed.lettaBin,
+        lettaApiKey: preConfig.lettaApiKey,
+        lettaServerUrl: preConfig.lettaServerUrl,
+        onStderr: preConfig.debugFrames
+          ? (line) => {
+              console.error(`[lettabox:control-plane] ${line}`);
+            }
+          : undefined,
+      });
+      mergedEnv.CONTROL_PLANE_URL = managedControlPlane.wsUrl;
+    }
+
+    const config = loadConfig(mergedEnv);
+    const startedAt = Date.now();
+    let upstreamReady = false;
+
+    const activeProxy = new MultiplexerProxy({
+      config,
+      onUpstreamReady: () => {
+        upstreamReady = true;
+      },
+      onUpstreamDisconnect: () => {
+        upstreamReady = false;
+      },
+      onTerminalClose: () => {
+        void cleanupAndExit(0);
+      },
+    });
+    proxy = activeProxy;
+
+    if (parsed.statusPort !== undefined) {
+      statusServer = startStatusServer({
+        port: parsed.statusPort,
+        getSnapshot: () => ({
+          name: "lettabox",
+          connectionName: config.connectionName,
+          sandboxMode: config.sandboxMode,
+          upstreamReady,
+          uptimeMs: Date.now() - startedAt,
+          activeSandboxes: activeProxy.listActiveSandboxes(),
+        }),
+      });
+      console.log(`[lettabox] Status endpoint listening at ${statusServer.url}/status`);
+    }
+
+    process.on("SIGINT", () => {
+      console.log("[lettabox] Received SIGINT, shutting down...");
+      void cleanupAndExit(0);
+    });
+    process.on("SIGTERM", () => {
+      console.log("[lettabox] Received SIGTERM, shutting down...");
+      void cleanupAndExit(0);
+    });
+
+    await activeProxy.start();
   } catch (err) {
     console.error("[lettabox] Fatal error:", err);
     await cleanupAndExit(1);

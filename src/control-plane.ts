@@ -5,6 +5,7 @@ export interface ManagedControlPlaneOptions {
   lettaApiKey: string;
   lettaServerUrl: string;
   allocatePort?: () => Promise<number>;
+  onStdout?: (line: string) => void;
   onStderr?: (line: string) => void;
 }
 
@@ -13,6 +14,26 @@ export interface RunningControlPlane {
   readonly wsUrl: string;
   readonly httpUrl: string;
   stop(): Promise<void>;
+}
+
+function drainStream(
+  stream: ReadableStream<Uint8Array>,
+  onChunk: (text: string) => void,
+): void {
+  void (async () => {
+    const reader = stream.getReader();
+    const decoder = new TextDecoder();
+    try {
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        const text = decoder.decode(value, { stream: true }).trim();
+        if (text) onChunk(text);
+      }
+    } catch {
+      // Ignore stream close on shutdown
+    }
+  })();
 }
 
 export async function spawnManagedControlPlane(
@@ -24,8 +45,8 @@ export async function spawnManagedControlPlane(
   const listenUrl = `ws://127.0.0.1:${port}`;
 
   const proc = Bun.spawn([lettaBin, "server", "--listen", listenUrl], {
-    stdout: "pipe",
-    stderr: "pipe",
+    stdout: options.onStdout ? "pipe" : "ignore",
+    stderr: options.onStderr ? "pipe" : "ignore",
     env: {
       ...process.env,
       LETTA_API_KEY: options.lettaApiKey,
@@ -33,21 +54,11 @@ export async function spawnManagedControlPlane(
     },
   });
 
+  if (options.onStdout && proc.stdout) {
+    drainStream(proc.stdout, options.onStdout);
+  }
   if (options.onStderr && proc.stderr) {
-    void (async () => {
-      const reader = proc.stderr.getReader();
-      const decoder = new TextDecoder();
-      try {
-        while (true) {
-          const { value, done } = await reader.read();
-          if (done) break;
-          const text = decoder.decode(value, { stream: true }).trim();
-          if (text) options.onStderr?.(text);
-        }
-      } catch {
-        // Ignore stream close on shutdown
-      }
-    })();
+    drainStream(proc.stderr, options.onStderr);
   }
 
   let stopped = false;

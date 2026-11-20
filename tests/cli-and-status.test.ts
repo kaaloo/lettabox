@@ -2,8 +2,9 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { parseCliArgs } from "../src/cli.ts";
+import { parseCliArgs, runCli } from "../src/cli.ts";
 import { loadConfig, readApiKeyFromLettaSettings } from "../src/config.ts";
+import { spawnManagedControlPlane } from "../src/control-plane.ts";
 import { startStatusServer, type StatusServer } from "../src/status-server.ts";
 
 const tempDirs: string[] = [];
@@ -134,5 +135,80 @@ describe("StatusServer", () => {
 
     const notFound = await fetch(`${srv.url}/nope`);
     expect(notFound.status).toBe(404);
+  });
+
+  test("runCli stops managed control-plane when --status-port is already occupied", async () => {
+    const occupied = startStatusServer({
+      port: 0,
+      getSnapshot: () => ({
+        name: "lettabox",
+        connectionName: "occupied",
+        sandboxMode: "microsandbox",
+        upstreamReady: false,
+        uptimeMs: 0,
+        activeSandboxes: [],
+      }),
+    });
+    servers.push(occupied);
+
+    let stopped = false;
+    const exitCodes: number[] = [];
+    const origError = console.error;
+    const origLog = console.log;
+    console.error = () => {};
+    console.log = () => {};
+    try {
+      await runCli(["--status-port", String(occupied.port)], {
+        env: {
+          LETTA_API_KEY: "test-key",
+          LETTA_DEVICE_ID: "dev-1",
+        },
+        spawnControlPlane: async () => ({
+          port: 49999,
+          wsUrl: "ws://127.0.0.1:49999/ws",
+          httpUrl: "http://127.0.0.1:49999",
+          async stop() {
+            stopped = true;
+          },
+        }),
+        exit: (code) => {
+          exitCodes.push(code);
+        },
+      });
+    } finally {
+      console.error = origError;
+      console.log = origLog;
+    }
+
+    expect(stopped).toBe(true);
+    expect(exitCodes).toEqual([1]);
+  });
+
+  test("spawnManagedControlPlane does not block when child writes large stdout", async () => {
+    const dir = makeTempDir();
+    const doneFile = join(dir, "stdout-done");
+    const stubBin = join(dir, "stub-letta.sh");
+    writeFileSync(
+      stubBin,
+      `#!/usr/bin/env bash\npython3 -c 'print("x" * 262144)'\ntouch "${doneFile}"\nsleep 30\n`,
+      { mode: 0o755 },
+    );
+
+    const cp = await spawnManagedControlPlane({
+      lettaBin: stubBin,
+      lettaApiKey: "test-key",
+      lettaServerUrl: "https://api.letta.com",
+    });
+
+    try {
+      const deadline = Date.now() + 3_000;
+      const { existsSync } = await import("node:fs");
+      while (!existsSync(doneFile) && Date.now() < deadline) {
+        await Bun.sleep(20);
+      }
+      expect(existsSync(doneFile)).toBe(true);
+    } finally {
+      await cp.stop();
+    }
   });
 });

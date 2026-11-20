@@ -33,6 +33,7 @@ export interface PassthroughProxyOptions {
   allocatePort?: () => Promise<number>;
   onTerminalClose?: (reason: string) => void;
   onUpstreamReady?: () => void;
+  onUpstreamDisconnect?: () => void;
 }
 
 export class PassthroughProxy {
@@ -43,6 +44,7 @@ export class PassthroughProxy {
   private readonly allocatePort?: () => Promise<number>;
   private readonly onTerminalClose?: (reason: string) => void;
   private readonly onUpstreamReady?: () => void;
+  private readonly onUpstreamDisconnect?: () => void;
 
   private controlPlane: DownstreamClient | null = null;
   private conversationProvider: ConversationTargetProvider | null = null;
@@ -60,6 +62,7 @@ export class PassthroughProxy {
     this.allocatePort = options.allocatePort;
     this.onTerminalClose = options.onTerminalClose;
     this.onUpstreamReady = options.onUpstreamReady;
+    this.onUpstreamDisconnect = options.onUpstreamDisconnect;
   }
 
   listActiveSandboxes(): ActiveSandboxInfo[] {
@@ -213,6 +216,7 @@ export class PassthroughProxy {
         this.logger.warn(
           `Upstream ${channel} closed (${code}: ${reason || "no reason"})`,
         );
+        this.onUpstreamDisconnect?.();
       },
       onTerminalClose: (reason) => {
         this.logger.warn(`Upstream terminal close: ${reason}`);
@@ -235,6 +239,7 @@ export class PassthroughProxy {
   async stopAsync(): Promise<void> {
     if (this.stopped) return;
     this.stopped = true;
+    this.onUpstreamDisconnect?.();
     this.upstream?.close();
     this.upstream = null;
     if (this.asyncCloseProvider) {
