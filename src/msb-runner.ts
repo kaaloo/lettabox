@@ -91,12 +91,49 @@ export interface MsbRunner {
   ensureReady?(): Promise<void>;
   runSandbox(spec: MsbRunSpec): Promise<string>;
   removeSandbox(name: string): Promise<void>;
+  readSandboxLogs?(name: string): Promise<string | undefined>;
 }
 
 export interface SdkRuntimeOps {
   resolveRuntime: typeof resolveRuntime;
   resolveRuntimeVersion: typeof resolveRuntimeVersion;
   installRuntime: typeof installRuntime;
+}
+
+export interface SdkSandboxInstance {
+  readonly name: string;
+  execDetached(cmd: string, args?: Iterable<string>): Promise<{ id: string }>;
+  detach(): Promise<void>;
+  destroy(options?: { force?: boolean }): Promise<void>;
+}
+
+export interface SdkSandboxJobListBuilder {
+  all(value?: boolean): this;
+  limit(value: number): this;
+}
+
+export interface SdkSandboxHandle {
+  destroy(options?: { force?: boolean }): Promise<void>;
+  listJobsWith(configure: (b: SdkSandboxJobListBuilder) => SdkSandboxJobListBuilder): Promise<{
+    items: ReadonlyArray<{
+      id: string;
+      state: string;
+      exitCode: number | null;
+      error: string | null;
+    }>;
+  }>;
+  getJob(id: string): Promise<{
+    logs(options?: { tail?: number }): Promise<ReadonlyArray<{ source: string; data: Buffer }>>;
+  }>;
+  logs(options?: {
+    tail?: number;
+    sources?: ReadonlyArray<"stdout" | "stderr" | "output" | "system" | "all">;
+  }): Promise<ReadonlyArray<{ source: string; text(): string }>>;
+}
+
+export interface SdkSandboxOps {
+  create: (spec: MsbRunSpec) => Promise<SdkSandboxInstance>;
+  get: (name: string) => Promise<SdkSandboxHandle>;
 }
 
 export interface SdkMsbRunnerLogger {
@@ -110,6 +147,7 @@ export interface SdkMsbRunnerOptions {
   expectedVersion?: string;
   env?: Record<string, string | undefined>;
   runtimeOps?: SdkRuntimeOps;
+  sandboxOps?: SdkSandboxOps;
   logger?: SdkMsbRunnerLogger;
 }
 
@@ -177,6 +215,20 @@ export function buildSdkSandbox(spec: MsbRunSpec): SandboxBuilder {
   return builder;
 }
 
+export function resolveMsbLaunchCommand(spec: MsbRunSpec): { cmd: string; args: string[] } | null {
+  const entrypoint = spec.entrypoint?.trim();
+  if (entrypoint) {
+    return { cmd: entrypoint, args: spec.command ? [...spec.command] : [] };
+  }
+  if (spec.command && spec.command.length > 0) {
+    const [cmd, ...args] = spec.command;
+    if (cmd && cmd.trim().length > 0) {
+      return { cmd, args };
+    }
+  }
+  return null;
+}
+
 export class SdkMsbRunner implements MsbRunner {
   private readonly msbHome: string;
   private readonly explicitMsbBin?: string;
@@ -184,6 +236,7 @@ export class SdkMsbRunner implements MsbRunner {
   private readonly env: Record<string, string | undefined>;
   private readonly mirrorToNativeEnv: boolean;
   private readonly runtimeOps: SdkRuntimeOps;
+  private readonly sandboxOps: SdkSandboxOps;
   private readonly logger?: SdkMsbRunnerLogger;
   private readyPromise: Promise<ResolvedRuntime> | null = null;
 
@@ -201,6 +254,10 @@ export class SdkMsbRunner implements MsbRunner {
       resolveRuntimeVersion,
       installRuntime,
     };
+    this.sandboxOps = options.sandboxOps ?? {
+      create: (spec) => buildSdkSandbox(spec).create(),
+      get: (name) => Sandbox.get(name),
+    };
     this.logger = options.logger;
   }
 
@@ -216,19 +273,82 @@ export class SdkMsbRunner implements MsbRunner {
 
   async runSandbox(spec: MsbRunSpec): Promise<string> {
     await this.ensureReady();
-    const sandbox = await buildSdkSandbox(spec).create();
-    await sandbox.detach();
-    return sandbox.name;
+    const sandbox = await this.sandboxOps.create(spec);
+    const launch = resolveMsbLaunchCommand(spec);
+    try {
+      if (launch) {
+        // Microsandbox SDK's Sandbox.builder(...).create() only boots the microVM
+        // and records entrypoint/cmd metadata without executing them. Launch the
+        // server command as a detached guest job before detaching from the handle.
+        await sandbox.execDetached(launch.cmd, launch.args);
+      }
+      await sandbox.detach();
+      return sandbox.name;
+    } catch (error) {
+      await sandbox.destroy({ force: true }).catch(() => {});
+      throw error;
+    }
   }
 
   async removeSandbox(name: string): Promise<void> {
     await this.ensureReady();
     try {
-      const handle = await Sandbox.get(name);
+      const handle = await this.sandboxOps.get(name);
       await handle.destroy({ force: true });
     } catch (error) {
       if (error instanceof SandboxNotFoundError) return;
       throw error;
+    }
+  }
+
+  async readSandboxLogs(name: string): Promise<string | undefined> {
+    await this.ensureReady();
+    try {
+      const handle = await this.sandboxOps.get(name);
+      const parts: string[] = [];
+
+      try {
+        const jobs = await handle.listJobsWith((b) => b.all(true).limit(5));
+        for (const info of jobs.items) {
+          const statusParts = [`job=${info.id}`, `state=${info.state}`];
+          if (info.exitCode !== null) statusParts.push(`exitCode=${info.exitCode}`);
+          if (info.error) statusParts.push(`error=${info.error}`);
+          parts.push(`[${statusParts.join(" ")}]`);
+          try {
+            const job = await handle.getJob(info.id);
+            const entries = await job.logs({ tail: 40 });
+            const text = entries
+              .map((entry) => entry.data.toString("utf8"))
+              .join("")
+              .trim();
+            if (text) parts.push(text);
+          } catch {
+            // ignore individual job log read failures
+          }
+        }
+      } catch {
+        // fall through to sandbox-level logs
+      }
+
+      if (parts.length === 0) {
+        try {
+          const entries = await handle.logs({ tail: 40, sources: ["all"] });
+          const text = entries
+            .map((entry) => entry.text())
+            .join("")
+            .trim();
+          if (text) parts.push(text);
+        } catch {
+          // ignore
+        }
+      }
+
+      const combined = parts.join("\n").trim();
+      if (!combined) return undefined;
+      return combined.length > 2_000 ? `${combined.slice(0, 2_000)}...` : combined;
+    } catch (error) {
+      if (error instanceof SandboxNotFoundError) return undefined;
+      return undefined;
     }
   }
 

@@ -8,8 +8,10 @@ import {
   type MsbRunSpec,
   parseMsbCpuCount,
   parseMsbMemoryMiB,
+  resolveMsbLaunchCommand,
   SdkMsbRunner,
   type SdkRuntimeOps,
+  type SdkSandboxOps,
 } from "../src/msb-runner.ts";
 import { MultiplexerProxy } from "../src/proxy.ts";
 
@@ -694,5 +696,223 @@ describe("SdkMsbRunner runtime version matching", () => {
       if (prevFw !== undefined) setNativeProcessEnv("MSB_LIBKRUNFW_PATH", prevFw);
       else unsetNativeProcessEnv("MSB_LIBKRUNFW_PATH");
     }
+  });
+});
+
+describe("SdkMsbRunner detached command launch and diagnostics", () => {
+  const readyRuntimeOps: SdkRuntimeOps = {
+    resolveRuntime: () => ({
+      msbPath: "/home/test/.lettabox/microsandbox/bin/msb",
+      libkrunfwPath: "/home/test/.lettabox/microsandbox/lib/libkrunfw.dylib",
+      origin: "home",
+    }),
+    resolveRuntimeVersion: async () => "0.7.16",
+    installRuntime: async () => {
+      throw new Error("should not install");
+    },
+  };
+
+  test("resolveMsbLaunchCommand combines entrypoint and command or splits command-only specs", () => {
+    expect(
+      resolveMsbLaunchCommand({
+        name: "s1",
+        image: "img",
+        hostPort: 10000,
+        guestPort: 4500,
+        labels: {},
+        env: {},
+        entrypoint: "/bin/sh",
+        command: ["-c", "exec letta server"],
+      }),
+    ).toEqual({ cmd: "/bin/sh", args: ["-c", "exec letta server"] });
+
+    expect(
+      resolveMsbLaunchCommand({
+        name: "s2",
+        image: "img",
+        hostPort: 10000,
+        guestPort: 4500,
+        labels: {},
+        env: {},
+        command: ["letta", "server", "--listen", "ws://0.0.0.0:4500"],
+      }),
+    ).toEqual({ cmd: "letta", args: ["server", "--listen", "ws://0.0.0.0:4500"] });
+
+    expect(
+      resolveMsbLaunchCommand({
+        name: "s3",
+        image: "img",
+        hostPort: 10000,
+        guestPort: 4500,
+        labels: {},
+        env: {},
+      }),
+    ).toBeNull();
+  });
+
+  test("runSandbox launches the bootstrap command via execDetached before detaching", async () => {
+    const events: string[] = [];
+    const execCalls: Array<{ cmd: string; args: string[] }> = [];
+    const sandboxOps: SdkSandboxOps = {
+      create: async (spec) => {
+        events.push(`create:${spec.name}`);
+        return {
+          name: spec.name,
+          execDetached: async (cmd, args) => {
+            events.push("execDetached");
+            execCalls.push({ cmd, args: args ? Array.from(args) : [] });
+            return { id: "job-1" };
+          },
+          detach: async () => {
+            events.push("detach");
+          },
+          destroy: async () => {
+            events.push("destroy");
+          },
+        };
+      },
+      get: async () => {
+        throw new Error("unused");
+      },
+    };
+
+    const runner = new SdkMsbRunner({
+      msbHome: "/home/test/.lettabox/microsandbox",
+      expectedVersion: "0.7.16",
+      env: {},
+      runtimeOps: readyRuntimeOps,
+      sandboxOps,
+      logger: silentLogger,
+    });
+
+    const createdName = await runner.runSandbox({
+      name: "letta-msb-test-1",
+      image: "ghcr.io/letta-ai/letta-code:latest",
+      hostPort: 20711,
+      guestPort: 4500,
+      labels: { "letta-sandbox.managed": "true" },
+      env: { LETTA_WS_TOKEN: "tok" },
+      entrypoint: "/bin/sh",
+      command: ["-c", "exec letta server"],
+    });
+
+    expect(createdName).toBe("letta-msb-test-1");
+    expect(events).toEqual(["create:letta-msb-test-1", "execDetached", "detach"]);
+    expect(execCalls).toEqual([{ cmd: "/bin/sh", args: ["-c", "exec letta server"] }]);
+  });
+
+  test("runSandbox destroys the created sandbox if execDetached fails", async () => {
+    let destroyedForce: boolean | undefined;
+    const sandboxOps: SdkSandboxOps = {
+      create: async (spec) => ({
+        name: spec.name,
+        execDetached: async () => {
+          throw new Error("execDetached boom");
+        },
+        detach: async () => {
+          throw new Error("should not detach");
+        },
+        destroy: async (opts) => {
+          destroyedForce = opts?.force;
+        },
+      }),
+      get: async () => {
+        throw new Error("unused");
+      },
+    };
+
+    const runner = new SdkMsbRunner({
+      msbHome: "/home/test/.lettabox/microsandbox",
+      expectedVersion: "0.7.16",
+      env: {},
+      runtimeOps: readyRuntimeOps,
+      sandboxOps,
+      logger: silentLogger,
+    });
+
+    await expect(
+      runner.runSandbox({
+        name: "letta-msb-fail-1",
+        image: "ghcr.io/letta-ai/letta-code:latest",
+        hostPort: 20712,
+        guestPort: 4500,
+        labels: {},
+        env: {},
+        entrypoint: "/bin/sh",
+        command: ["-c", "exec letta server"],
+      }),
+    ).rejects.toThrow("execDetached boom");
+    expect(destroyedForce).toBe(true);
+  });
+
+  test("readSandboxLogs returns detached job status and stderr/stdout output", async () => {
+    const sandboxOps: SdkSandboxOps = {
+      create: async () => {
+        throw new Error("unused");
+      },
+      get: async () => ({
+        destroy: async () => {},
+        listJobsWith: async () => ({
+          items: [
+            {
+              id: "job-abc",
+              state: "exited",
+              exitCode: 127,
+              error: null,
+            },
+          ],
+        }),
+        getJob: async () => ({
+          logs: async () => [
+            { source: "stderr", data: Buffer.from("/bin/sh: letta: not found\n") },
+          ],
+        }),
+        logs: async () => [],
+      }),
+    };
+
+    const runner = new SdkMsbRunner({
+      msbHome: "/home/test/.lettabox/microsandbox",
+      expectedVersion: "0.7.16",
+      env: {},
+      runtimeOps: readyRuntimeOps,
+      sandboxOps,
+      logger: silentLogger,
+    });
+
+    const logs = await runner.readSandboxLogs("letta-msb-diag-1");
+    expect(logs).toContain("[job=job-abc state=exited exitCode=127]");
+    expect(logs).toContain("/bin/sh: letta: not found");
+  });
+
+  test("MicrosandboxProvider logs guest diagnostics before removing a timed-out sandbox", async () => {
+    const mockMsb = createMockMsbRunner({ failHealth: true });
+    cleanups.push(() => mockMsb.cleanupAll());
+    mockMsb.runner.readSandboxLogs = async () => "[job=job-1 state=exited exitCode=1]\nboom";
+
+    const errors: string[] = [];
+    const provider = new MicrosandboxProvider({
+      image: "letta-sandbox-worker:latest",
+      lettaApiKey: "test-key",
+      lettaServerUrl: "https://api.letta.com",
+      startTimeoutMs: 200,
+      idleTimeoutMs: 60_000,
+      reaperIntervalMs: 60_000,
+      msb: mockMsb.runner,
+      logger: {
+        info: () => {},
+        warn: () => {},
+        error: (msg) => errors.push(msg),
+      },
+      onMessage: () => {},
+    });
+    cleanups.push(() => provider.closeAllAsync());
+
+    await expect(provider.acquireForConversation("conv-diag")).rejects.toThrow(
+      "Timed out waiting for downstream server",
+    );
+    expect(errors.some((line) => line.includes("[guest logs]") && line.includes("boom"))).toBe(
+      true,
+    );
   });
 });
