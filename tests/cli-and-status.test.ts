@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { parseCliArgs, runCli } from "../src/cli.ts";
+import { createLifecycleEmitter, parseCliArgs, runCli } from "../src/cli.ts";
 import { loadConfig, readApiKeyFromLettaSettings } from "../src/config.ts";
 import { spawnManagedControlPlane } from "../src/control-plane.ts";
 import { startStatusServer, type StatusServer } from "../src/status-server.ts";
@@ -76,9 +76,40 @@ describe("lettabox CLI argument parsing", () => {
     });
   });
 
-  test("handles --help and rejects unknown flags", () => {
+  test("handles --help, --version, and rejects unknown flags", () => {
     expect(parseCliArgs(["--help"], {}).help).toBe(true);
+    expect(parseCliArgs(["--version"], {}).version).toBe(true);
     expect(() => parseCliArgs(["--bogus"], {})).toThrow("Unknown argument: --bogus");
+    expect(() => parseCliArgs(["--lifecycle-output", "xml"], {})).toThrow(
+      "Unsupported --lifecycle-output format",
+    );
+  });
+
+  test("accepts letta server drop-in flags (--computer-name and --lifecycle-output jsonl)", () => {
+    const parsed = parseCliArgs(
+      ["server", "--computer-name", "mac-studio", "--lifecycle-output", "jsonl"],
+      {},
+    );
+    expect(parsed.envOverrides.LETTA_CONNECTION_NAME).toBe("mac-studio");
+    expect(parsed.lifecycleOutput).toBe("jsonl");
+  });
+
+  test("createLifecycleEmitter writes deduplicated lettaLifecycleProtocol v1 JSONL lines", () => {
+    const lines: string[] = [];
+    const emit = createLifecycleEmitter(true, (line) => lines.push(line));
+    emit("starting");
+    emit("starting");
+    emit("ready");
+    emit("working");
+    emit("working");
+    emit("ready");
+
+    expect(lines.map((l) => JSON.parse(l))).toEqual([
+      { lettaLifecycleProtocol: 1, state: "starting" },
+      { lettaLifecycleProtocol: 1, state: "ready" },
+      { lettaLifecycleProtocol: 1, state: "working" },
+      { lettaLifecycleProtocol: 1, state: "ready" },
+    ]);
   });
 });
 
