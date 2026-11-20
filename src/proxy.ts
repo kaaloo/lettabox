@@ -1,6 +1,6 @@
 import type { ProxyConfig } from "./config.ts";
 import { DownstreamClient } from "./downstream.ts";
-import { MicrosandboxProvider } from "./microsandbox-provider.ts";
+import { type ActiveSandboxInfo, MicrosandboxProvider } from "./microsandbox-provider.ts";
 import type { MsbRunner } from "./msb-runner.ts";
 import { fetchAppServerInfo, waitForDownstreamHealth } from "./register.ts";
 import {
@@ -19,10 +19,10 @@ export interface Logger {
 }
 
 const defaultLogger: Logger = {
-  info: (msg) => console.log(`[letta-sandbox] ${msg}`),
-  warn: (msg) => console.warn(`[letta-sandbox] WARN: ${msg}`),
-  error: (msg) => console.error(`[letta-sandbox] ERROR: ${msg}`),
-  debug: (msg) => console.log(`[letta-sandbox] DEBUG: ${msg}`),
+  info: (msg) => console.log(`[lettabox] ${msg}`),
+  warn: (msg) => console.warn(`[lettabox] WARN: ${msg}`),
+  error: (msg) => console.error(`[lettabox] ERROR: ${msg}`),
+  debug: (msg) => console.log(`[lettabox] DEBUG: ${msg}`),
 };
 
 export interface PassthroughProxyOptions {
@@ -33,6 +33,7 @@ export interface PassthroughProxyOptions {
   allocatePort?: () => Promise<number>;
   onTerminalClose?: (reason: string) => void;
   onUpstreamReady?: () => void;
+  onUpstreamDisconnect?: () => void;
 }
 
 export class PassthroughProxy {
@@ -43,9 +44,11 @@ export class PassthroughProxy {
   private readonly allocatePort?: () => Promise<number>;
   private readonly onTerminalClose?: (reason: string) => void;
   private readonly onUpstreamReady?: () => void;
+  private readonly onUpstreamDisconnect?: () => void;
 
   private controlPlane: DownstreamClient | null = null;
   private conversationProvider: ConversationTargetProvider | null = null;
+  private msbProvider: MicrosandboxProvider | null = null;
   private asyncCloseProvider: (() => Promise<void>) | null = null;
   private router: EnvelopeRouter | null = null;
   private upstream: UpstreamRelayClient | null = null;
@@ -59,6 +62,11 @@ export class PassthroughProxy {
     this.allocatePort = options.allocatePort;
     this.onTerminalClose = options.onTerminalClose;
     this.onUpstreamReady = options.onUpstreamReady;
+    this.onUpstreamDisconnect = options.onUpstreamDisconnect;
+  }
+
+  listActiveSandboxes(): ActiveSandboxInfo[] {
+    return this.msbProvider?.listActiveSandboxes() ?? [];
   }
 
   async start(): Promise<void> {
@@ -146,6 +154,7 @@ export class PassthroughProxy {
           this.router?.handleDownstreamMessage(target, raw);
         },
       });
+      this.msbProvider = msbProvider;
       this.asyncCloseProvider = () => msbProvider.closeAllAsync();
       provider = msbProvider;
     } else {
@@ -207,6 +216,7 @@ export class PassthroughProxy {
         this.logger.warn(
           `Upstream ${channel} closed (${code}: ${reason || "no reason"})`,
         );
+        this.onUpstreamDisconnect?.();
       },
       onTerminalClose: (reason) => {
         this.logger.warn(`Upstream terminal close: ${reason}`);
@@ -229,6 +239,7 @@ export class PassthroughProxy {
   async stopAsync(): Promise<void> {
     if (this.stopped) return;
     this.stopped = true;
+    this.onUpstreamDisconnect?.();
     this.upstream?.close();
     this.upstream = null;
     if (this.asyncCloseProvider) {
@@ -238,6 +249,7 @@ export class PassthroughProxy {
       this.conversationProvider?.closeAll();
     }
     this.conversationProvider = null;
+    this.msbProvider = null;
     this.controlPlane?.close();
     this.controlPlane = null;
     this.router = null;
