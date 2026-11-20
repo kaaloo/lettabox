@@ -279,11 +279,11 @@ export async function runCli(
       logger: proxyLogger,
       onUpstreamReady: () => {
         upstreamReady = true;
+        working = activeProxy.listActiveSandboxes().some((s) => s.busy);
         emitLifecycle(working ? "working" : "ready");
       },
       onUpstreamDisconnect: () => {
         upstreamReady = false;
-        working = false;
         if (!shuttingDown) {
           emitLifecycle("reconnecting");
         }
