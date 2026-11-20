@@ -72,7 +72,7 @@ During live end-to-end testing against `chat.letta.com`, we observed several beh
 msb pull ghcr.io/letta-ai/letta-code:latest
 
 # Clone and run (auto-spawns control-plane + reads auth from ~/.letta/settings.json or LETTA_API_KEY)
-git clone https://github.com/kaaloo/letta-sandbox.git lettabox
+git clone https://github.com/kaaloo/lettabox.git
 cd lettabox && bun install
 bun run start -- --name my-lettabox --debug
 ```
