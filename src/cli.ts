@@ -27,12 +27,13 @@ Options:
   --control-plane-url <ws://>   Attach to an existing control-plane letta server instead of auto-spawning
   --status-port <port>          Expose local http://127.0.0.1:<port>/status JSON endpoint (e.g. for menubar)
   --letta-bin <path>            Path to local letta CLI binary for control-plane (default: letta)
-  --msb-path <path>             Path to msb binary (default: msb)
+  --msb-path <path>             Override the SDK-bundled msb runtime binary (advanced)
   --debug                       Log routed envelope frames and event_seq rewrites
   -h, --help                    Show this help message
 
 Environment:
   LETTA_API_KEY                 Letta Cloud API key (or auto-loaded from ~/.letta/settings.json)
+  MSB_HOME                      Microsandbox home (default: ~/.lettabox/microsandbox)
 `;
 
 export function parseCliArgs(

@@ -47,12 +47,12 @@ flowchart TB
 
 3. **Defense-in-Depth Security (Host-Side Secret Injection)**
    - **Hardware isolation:** Real microVMs on both macOS (Apple Silicon Hypervisor.framework) and Linux (KVM) via [`microsandbox`](https://github.com/superradcompany/microsandbox) (`msb`).
-   - **API key never enters the guest VM:** Uses `msb`'s `--secret LETTA_API_KEY:headers=[Authorization]@api.letta.com` so the guest only sees a placeholder and the real `LETTA_API_KEY` is injected at the host TLS boundary exclusively for `api.letta.com`.
+   - **API key never enters the guest VM:** The Microsandbox TypeScript SDK restricts `LETTA_API_KEY` substitution to the `Authorization` header for `api.letta.com`, so the guest only sees a placeholder and the real key is injected at the host TLS boundary.
    - **Authenticated loopback transport:** Each microVM binds to a random host loopback port (`127.0.0.1:<port>`) and requires a fresh 256-bit per-VM `--ws-auth capability-token` (written to a `0600` file and unset from guest env before `exec letta server`).
 
 4. **Lifecycle & Reliability**
    - **Busy-turn reaper guard:** Tracks `input_accepted` → `turn_finished` / `update_loop_status` so an actively working microVM is never reaped mid-turn during long builds or test runs.
-   - **Dead-VM eviction:** If a microVM crashes or OOMs, bounded downstream reconnects evict the dead slot, run `msb rm --force`, and transparently respawn on the next frame.
+   - **Dead-VM eviction:** If a microVM crashes or OOMs, bounded downstream reconnects evict the dead slot, force-destroy it through the SDK, and transparently respawn on the next frame.
 
 ---
 
@@ -68,19 +68,16 @@ During live end-to-end testing against `chat.letta.com`, we observed several beh
 ## Try It in 60 Seconds
 
 ```zsh
-# Pre-cache the official multi-arch Letta Code image once
-msb pull ghcr.io/letta-ai/letta-code:latest
-
 # Clone and run (auto-spawns control-plane + reads auth from ~/.letta/settings.json or LETTA_API_KEY)
 git clone https://github.com/kaaloo/lettabox.git
 cd lettabox && bun install
 bun run start -- --name my-lettabox --debug
 ```
 
-Then select **`my-lettabox`** in `chat.letta.com`, open two conversations, and inspect the running microVMs with:
+The TypeScript SDK provisions its bundled runtime during `bun install`; no global `msb` CLI is required. The first sandbox boot pulls the image automatically. Then select **`my-lettabox`** in `chat.letta.com`, open two conversations, and inspect the running microVMs with:
 
 ```zsh
-msb ls --label letta-sandbox.managed=true
+MSB_HOME="$HOME/.lettabox/microsandbox" bunx msb list --label letta-sandbox.managed=true
 ```
 
 ---

@@ -15,5 +15,8 @@
   "devDependencies": {
     "@types/bun": "latest",
     "typescript": "^5.8.0"
+  },
+  "dependencies": {
+    "microsandbox": "0.7.16"
   }
 }

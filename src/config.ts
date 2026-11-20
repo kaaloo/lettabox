@@ -14,6 +14,7 @@ export interface SandboxConfig {
   memoryLimit: string;
   cpuLimit: string;
   msbBin?: string;
+  msbHome?: string;
   msbSecretInjection: boolean;
 }
 
@@ -204,6 +205,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
       memoryLimit: env.SANDBOX_MEMORY_LIMIT?.trim() || "2G",
       cpuLimit: env.SANDBOX_CPU_LIMIT?.trim() || "2",
       msbBin: env.MSB_PATH?.trim() || undefined,
+      msbHome: env.MSB_HOME?.trim() || join(homedir(), ".lettabox", "microsandbox"),
       msbSecretInjection,
     },
     workerWsUrls,
