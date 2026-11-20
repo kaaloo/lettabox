@@ -5,10 +5,12 @@ export interface DownstreamClientOptions {
   token?: string;
   reconnectBaseDelayMs?: number;
   reconnectMaxDelayMs?: number;
+  maxReconnectAttempts?: number;
   maxQueuedMessages?: number;
   onMessage: (raw: string) => void;
   onOpen?: () => void;
   onClose?: (code: number, reason: string) => void;
+  onPermanentClose?: (code: number, reason: string) => void;
   onError?: (err: unknown) => void;
 }
 
@@ -17,10 +19,12 @@ export class DownstreamClient {
   private readonly token?: string;
   private readonly reconnectBaseDelayMs: number;
   private readonly reconnectMaxDelayMs: number;
+  private readonly maxReconnectAttempts?: number;
   private readonly maxQueuedMessages: number;
   private readonly onMessage: (raw: string) => void;
   private readonly onOpenCb?: () => void;
   private readonly onCloseCb?: (code: number, reason: string) => void;
+  private readonly onPermanentCloseCb?: (code: number, reason: string) => void;
   private readonly onErrorCb?: (err: unknown) => void;
 
   private ws: WebSocket | null = null;
@@ -34,10 +38,12 @@ export class DownstreamClient {
     this.token = options.token;
     this.reconnectBaseDelayMs = options.reconnectBaseDelayMs ?? 1_000;
     this.reconnectMaxDelayMs = options.reconnectMaxDelayMs ?? 30_000;
+    this.maxReconnectAttempts = options.maxReconnectAttempts;
     this.maxQueuedMessages = options.maxQueuedMessages ?? 256;
     this.onMessage = options.onMessage;
     this.onOpenCb = options.onOpen;
     this.onCloseCb = options.onClose;
+    this.onPermanentCloseCb = options.onPermanentClose;
     this.onErrorCb = options.onError;
   }
 
@@ -64,6 +70,10 @@ export class DownstreamClient {
 
   get isOpen(): boolean {
     return this.ws !== null && this.ws.readyState === WebSocket.OPEN;
+  }
+
+  get isClosed(): boolean {
+    return this.closed;
   }
 
   send(raw: string): boolean {
@@ -149,7 +159,7 @@ export class DownstreamClient {
         );
       }
       if (!this.closed) {
-        this.scheduleReconnect();
+        this.scheduleReconnect(event.code, event.reason);
       }
     });
   }
@@ -164,8 +174,17 @@ export class DownstreamClient {
     }
   }
 
-  private scheduleReconnect(): void {
+  private scheduleReconnect(code: number, reason: string): void {
     if (this.closed || this.reconnectTimer !== null) return;
+    if (
+      this.maxReconnectAttempts !== undefined &&
+      this.reconnectAttempts >= this.maxReconnectAttempts
+    ) {
+      this.closed = true;
+      this.outboundQueue.length = 0;
+      this.onPermanentCloseCb?.(code, reason);
+      return;
+    }
     const delay = Math.min(
       this.reconnectBaseDelayMs * 2 ** this.reconnectAttempts,
       this.reconnectMaxDelayMs,

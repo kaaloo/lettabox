@@ -144,6 +144,12 @@ export class EnvelopeRouter {
   }
 
   private computeOrderKey(env: ReturnType<typeof extractRoutingEnvelope>): string {
+    if (
+      env.type &&
+      (STATELESS_CONVERSATION_CRUD_TYPES.has(env.type) || PTY_COMMAND_TYPES.has(env.type))
+    ) {
+      return "control-plane";
+    }
     if (env.type === "runtime_start") {
       if (env.topLevelConversationId && env.topLevelConversationId !== DEFAULT_CONVERSATION_ID) {
         return `conv:${env.topLevelConversationId}`;
@@ -152,8 +158,9 @@ export class EnvelopeRouter {
         return `create:${env.requestId}`;
       }
     }
-    if (env.runtimeConversationId && env.runtimeConversationId !== DEFAULT_CONVERSATION_ID) {
-      return `conv:${env.runtimeConversationId}`;
+    const convId = env.runtimeConversationId ?? env.topLevelConversationId;
+    if (convId && convId !== DEFAULT_CONVERSATION_ID) {
+      return `conv:${convId}`;
     }
     return "control-plane";
   }
@@ -218,14 +225,13 @@ export class EnvelopeRouter {
       return { target: this.controlPlane, isCreateConversation: false };
     }
 
-    // 3. Standard conversation-scoped frames (runtime.conversation_id)
-    if (env.runtimeConversationId) {
-      if (env.runtimeConversationId === DEFAULT_CONVERSATION_ID) {
+    // 3. Conversation-scoped frames (runtime.conversation_id or top-level conversation_id)
+    const convId = env.runtimeConversationId ?? env.topLevelConversationId;
+    if (convId) {
+      if (convId === DEFAULT_CONVERSATION_ID) {
         return { target: this.controlPlane, isCreateConversation: false };
       }
-      const target = await this.conversationProvider.acquireForConversation(
-        env.runtimeConversationId,
-      );
+      const target = await this.conversationProvider.acquireForConversation(convId);
       return { target, isCreateConversation: false };
     }
 

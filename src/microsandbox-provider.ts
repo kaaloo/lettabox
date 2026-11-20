@@ -2,6 +2,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { createServer } from "node:net";
 import { DownstreamClient } from "./downstream.ts";
 import { CliMsbRunner, type MsbRunner } from "./msb-runner.ts";
+import { parseJsonObject } from "./protocol.ts";
 import { waitForDownstreamHealth } from "./register.ts";
 import type { ConversationTargetProvider, DownstreamTarget } from "./router.ts";
 
@@ -13,6 +14,15 @@ export interface SandboxLogger {
 
 export const MANAGED_LABEL_KEY = "letta-sandbox.managed";
 export const MANAGED_LABEL_VALUE = "true";
+
+export interface ActiveSandboxInfo {
+  id: string;
+  sandboxName: string;
+  conversationId?: string;
+  hostPort: number;
+  busy: boolean;
+  lastActivityAt: number;
+}
 
 export interface MicrosandboxProviderOptions {
   image: string;
@@ -29,6 +39,7 @@ export interface MicrosandboxProviderOptions {
   startTimeoutMs?: number;
   reconnectBaseDelayMs?: number;
   reconnectMaxDelayMs?: number;
+  maxReconnectAttempts?: number;
   msb?: MsbRunner;
   allocatePort?: () => Promise<number>;
   fetchImpl?: typeof fetch;
@@ -45,10 +56,14 @@ interface ManagedMicrosandbox {
   readonly client: DownstreamClient;
   readonly target: DownstreamTarget;
   lastActivityAt: number;
+  busy: boolean;
   conversationId?: string;
   pendingRequestId?: string;
   stopping: boolean;
 }
+
+const BUSY_LOOP_STATUSES = new Set(["running", "processing", "waiting", "thinking", "streaming"]);
+const IDLE_LOOP_STATUSES = new Set(["idle", "ready", "completed", "error", "aborted", "cancelled"]);
 
 export const DEFAULT_MSB_BOOTSTRAP_SCRIPT =
   'umask 077; printf "%s\\n" "$LETTA_WS_TOKEN" > /tmp/letta-ws-token; unset LETTA_WS_TOKEN; exec letta server --listen "ws://0.0.0.0:${LETTA_LISTEN_PORT:-4500}" --ws-auth capability-token --ws-token-file /tmp/letta-ws-token';
@@ -79,6 +94,33 @@ export function allocateEphemeralLoopbackPort(): Promise<number> {
   });
 }
 
+function updateBusyFromDownstreamFrame(sandbox: ManagedMicrosandbox, raw: string): void {
+  const frame = parseJsonObject(raw);
+  if (!frame || typeof frame.type !== "string") return;
+
+  if (frame.type === "input_accepted") {
+    sandbox.busy = true;
+    return;
+  }
+  if (frame.type === "turn_finished") {
+    sandbox.busy = false;
+    return;
+  }
+  if (frame.type === "update_loop_status") {
+    const status =
+      typeof frame.status === "string"
+        ? frame.status.toLowerCase()
+        : typeof frame.loop_status === "string"
+          ? frame.loop_status.toLowerCase()
+          : undefined;
+    if (status && BUSY_LOOP_STATUSES.has(status)) {
+      sandbox.busy = true;
+    } else if (status && IDLE_LOOP_STATUSES.has(status)) {
+      sandbox.busy = false;
+    }
+  }
+}
+
 export class MicrosandboxProvider implements ConversationTargetProvider {
   private readonly options: MicrosandboxProviderOptions;
   private readonly msb: MsbRunner;
@@ -86,6 +128,7 @@ export class MicrosandboxProvider implements ConversationTargetProvider {
   private readonly idleTimeoutMs: number;
   private readonly reaperIntervalMs: number;
   private readonly startTimeoutMs: number;
+  private readonly maxReconnectAttempts: number;
   private readonly allocatePort: () => Promise<number>;
   private readonly now: () => number;
 
@@ -100,11 +143,12 @@ export class MicrosandboxProvider implements ConversationTargetProvider {
     this.options = options;
     this.msb = options.msb ?? new CliMsbRunner(options.msbBin);
     this.guestPort = options.guestPort ?? 4500;
-    this.idleTimeoutMs = options.idleTimeoutMs ?? 15 * 60_000;
+    this.idleTimeoutMs = options.idleTimeoutMs ?? 30 * 60_000;
     this.reaperIntervalMs =
       options.reaperIntervalMs ??
       Math.max(1_000, Math.min(30_000, Math.floor(this.idleTimeoutMs / 2)));
     this.startTimeoutMs = options.startTimeoutMs ?? 30_000;
+    this.maxReconnectAttempts = options.maxReconnectAttempts ?? 2;
     this.allocatePort = options.allocatePort ?? allocateEphemeralLoopbackPort;
     this.now = options.now ?? (() => Date.now());
 
@@ -115,15 +159,34 @@ export class MicrosandboxProvider implements ConversationTargetProvider {
     return this.conversationMap.size + this.pendingMap.size;
   }
 
+  listActiveSandboxes(): ActiveSandboxInfo[] {
+    const all = [...this.conversationMap.values(), ...this.pendingMap.values()];
+    return all
+      .filter((s) => !s.stopping && !s.client.isClosed)
+      .map((s) => ({
+        id: s.id,
+        sandboxName: s.sandboxName,
+        conversationId: s.conversationId,
+        hostPort: s.hostPort,
+        busy: s.busy,
+        lastActivityAt: s.lastActivityAt,
+      }));
+  }
+
   async acquireForConversation(conversationId: string): Promise<DownstreamTarget> {
     if (this.closed) {
       throw new Error("MicrosandboxProvider is closed");
     }
 
     const existing = this.conversationMap.get(conversationId);
-    if (existing && !existing.stopping) {
-      existing.lastActivityAt = this.now();
-      return existing.target;
+    if (existing) {
+      if (!existing.stopping && !existing.client.isClosed) {
+        existing.lastActivityAt = this.now();
+        return existing.target;
+      }
+      // Evict dead/closed sandbox so a fresh microVM is spawned immediately
+      this.conversationMap.delete(conversationId);
+      void this.destroySandbox(existing, "evicted dead sandbox");
     }
 
     const spawnKey = `conv:${conversationId}`;
@@ -155,9 +218,13 @@ export class MicrosandboxProvider implements ConversationTargetProvider {
     }
 
     const existing = this.pendingMap.get(requestId);
-    if (existing && !existing.stopping) {
-      existing.lastActivityAt = this.now();
-      return existing.target;
+    if (existing) {
+      if (!existing.stopping && !existing.client.isClosed) {
+        existing.lastActivityAt = this.now();
+        return existing.target;
+      }
+      this.pendingMap.delete(requestId);
+      void this.destroySandbox(existing, "evicted dead pending sandbox");
     }
 
     const spawnKey = `req:${requestId}`;
@@ -206,7 +273,7 @@ export class MicrosandboxProvider implements ConversationTargetProvider {
 
   getTarget(conversationId: string): DownstreamTarget | undefined {
     const sandbox = this.conversationMap.get(conversationId);
-    return sandbox && !sandbox.stopping ? sandbox.target : undefined;
+    return sandbox && !sandbox.stopping && !sandbox.client.isClosed ? sandbox.target : undefined;
   }
 
   async reapIdleOnce(): Promise<string[]> {
@@ -214,13 +281,13 @@ export class MicrosandboxProvider implements ConversationTargetProvider {
     const toReap: ManagedMicrosandbox[] = [];
 
     for (const [convId, sandbox] of this.conversationMap) {
-      if (!sandbox.stopping && sandbox.lastActivityAt <= cutoff) {
+      if (!sandbox.stopping && !sandbox.busy && sandbox.lastActivityAt <= cutoff) {
         this.conversationMap.delete(convId);
         toReap.push(sandbox);
       }
     }
     for (const [reqId, sandbox] of this.pendingMap) {
-      if (!sandbox.stopping && sandbox.lastActivityAt <= cutoff) {
+      if (!sandbox.stopping && !sandbox.busy && sandbox.lastActivityAt <= cutoff) {
         this.pendingMap.delete(reqId);
         toReap.push(sandbox);
       }
@@ -278,6 +345,15 @@ export class MicrosandboxProvider implements ConversationTargetProvider {
       }
     }
     throw new Error("Failed to reserve a unique host port for microsandbox");
+  }
+
+  private evictSandbox(sandbox: ManagedMicrosandbox): void {
+    if (sandbox.conversationId && this.conversationMap.get(sandbox.conversationId) === sandbox) {
+      this.conversationMap.delete(sandbox.conversationId);
+    }
+    if (sandbox.pendingRequestId && this.pendingMap.get(sandbox.pendingRequestId) === sandbox) {
+      this.pendingMap.delete(sandbox.pendingRequestId);
+    }
   }
 
   private async spawnSandbox(scope: {
@@ -359,9 +435,19 @@ export class MicrosandboxProvider implements ConversationTargetProvider {
         token: capabilityToken,
         reconnectBaseDelayMs: this.options.reconnectBaseDelayMs,
         reconnectMaxDelayMs: this.options.reconnectMaxDelayMs,
+        maxReconnectAttempts: this.maxReconnectAttempts,
         onMessage: (raw) => {
           sandbox.lastActivityAt = this.now();
+          updateBusyFromDownstreamFrame(sandbox, raw);
           this.options.onMessage(sandbox.target, raw);
+        },
+        onPermanentClose: (code, reason) => {
+          if (sandbox.stopping) return;
+          this.options.logger?.warn(
+            `Microsandbox ${id} disconnected permanently (${code}: ${reason || "no reason"}); evicting for clean respawn`,
+          );
+          this.evictSandbox(sandbox);
+          void this.destroySandbox(sandbox, "downstream disconnected permanently");
         },
         onError: (err) => {
           if (!sandbox.stopping) {
@@ -377,6 +463,7 @@ export class MicrosandboxProvider implements ConversationTargetProvider {
           return client.send(raw);
         },
         close: () => {
+          this.evictSandbox(sandbox);
           void this.destroySandbox(sandbox, "target closed");
         },
       };
@@ -389,6 +476,7 @@ export class MicrosandboxProvider implements ConversationTargetProvider {
         client,
         target,
         lastActivityAt: this.now(),
+        busy: false,
         conversationId: scope.conversationId,
         pendingRequestId: scope.pendingRequestId,
         stopping: false,
@@ -410,6 +498,7 @@ export class MicrosandboxProvider implements ConversationTargetProvider {
   private async destroySandbox(sandbox: ManagedMicrosandbox, reason: string): Promise<void> {
     if (sandbox.stopping) return;
     sandbox.stopping = true;
+    sandbox.busy = false;
     sandbox.client.close();
     this.reservedPorts.delete(sandbox.hostPort);
     this.options.logger?.info(

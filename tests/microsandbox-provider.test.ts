@@ -435,4 +435,89 @@ describe("MicrosandboxProvider lifecycle", () => {
     await proxy.stopAsync();
     expect(mockMsb.removedNames).toHaveLength(1);
   });
+
+  test("never reaps a busy sandbox mid-turn and reaps once turn_finished completes", async () => {
+    let fakeNow = 3_000_000;
+    const mockMsb = createMockMsbRunner();
+    cleanups.push(() => mockMsb.cleanupAll());
+
+    const provider = new MicrosandboxProvider({
+      image: "ghcr.io/letta-ai/letta-code:latest",
+      lettaApiKey: "test-key",
+      lettaServerUrl: "https://api.letta.com",
+      idleTimeoutMs: 10_000,
+      reaperIntervalMs: 60_000,
+      now: () => fakeNow,
+      msb: mockMsb.runner,
+      logger: silentLogger,
+      onMessage: () => {},
+    });
+    cleanups.push(() => provider.closeAllAsync());
+
+    const target = await provider.acquireForConversation("conv-busy");
+    const [sbx] = [...mockMsb.sandboxes.values()];
+
+    // Start an active turn
+    sbx!.socket!.send(JSON.stringify({ type: "input_accepted", request_id: "r1" }));
+    await Bun.sleep(25);
+    expect(provider.listActiveSandboxes()[0]?.busy).toBe(true);
+
+    // Advance well past idleTimeoutMs while turn is still active -> must NOT reap
+    fakeNow += 60_000;
+    expect(await provider.reapIdleOnce()).toEqual([]);
+    expect(provider.getTarget("conv-busy")).toBe(target);
+    expect(mockMsb.removedNames).toHaveLength(0);
+
+    // Finish the turn -> lastActivityAt resets to fakeNow, busy becomes false
+    sbx!.socket!.send(JSON.stringify({ type: "turn_finished", event_seq: 1 }));
+    await Bun.sleep(25);
+    expect(provider.listActiveSandboxes()[0]?.busy).toBe(false);
+
+    // Not yet idle right after turn_finished
+    expect(await provider.reapIdleOnce()).toEqual([]);
+
+    // Now advance past idleTimeoutMs -> cleanly reaped
+    fakeNow += 11_000;
+    expect(await provider.reapIdleOnce()).toHaveLength(1);
+    expect(provider.getTarget("conv-busy")).toBeUndefined();
+  });
+
+  test("evicts crashed/OOM-killed sandbox on permanent disconnect and respawns cleanly", async () => {
+    const mockMsb = createMockMsbRunner();
+    cleanups.push(() => mockMsb.cleanupAll());
+
+    const provider = new MicrosandboxProvider({
+      image: "ghcr.io/letta-ai/letta-code:latest",
+      lettaApiKey: "test-key",
+      lettaServerUrl: "https://api.letta.com",
+      idleTimeoutMs: 60_000,
+      reaperIntervalMs: 60_000,
+      reconnectBaseDelayMs: 20,
+      reconnectMaxDelayMs: 40,
+      maxReconnectAttempts: 1,
+      msb: mockMsb.runner,
+      logger: silentLogger,
+      onMessage: () => {},
+    });
+    cleanups.push(() => provider.closeAllAsync());
+
+    const t1 = await provider.acquireForConversation("conv-crash");
+    const [firstSbx] = [...mockMsb.sandboxes.values()];
+
+    // Simulate VM crash / OOM kill by stopping the underlying server abruptly
+    firstSbx!.server.stop(true);
+
+    // Wait for reconnect attempts to exhaust and trigger eviction
+    const deadline = Date.now() + 2_000;
+    while (provider.getTarget("conv-crash") !== undefined && Date.now() < deadline) {
+      await Bun.sleep(20);
+    }
+    expect(provider.getTarget("conv-crash")).toBeUndefined();
+    expect(mockMsb.removedNames).toContain(firstSbx!.name);
+
+    // Next message transparently spawns a fresh working sandbox
+    const t2 = await provider.acquireForConversation("conv-crash");
+    expect(t2).not.toBe(t1);
+    expect(mockMsb.spawnedSpecs).toHaveLength(2);
+  });
 });
