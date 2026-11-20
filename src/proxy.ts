@@ -164,6 +164,8 @@ export class PassthroughProxy {
       this.msbProvider = msbProvider;
       this.asyncCloseProvider = () => msbProvider.closeAllAsync();
       provider = msbProvider;
+      await msbProvider.ensureReady();
+      if (this.stopped) return;
     } else {
       provider = new StaticWorkerPool({
         workerUrls: this.config.workerWsUrls,
