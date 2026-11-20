@@ -42,6 +42,9 @@ interface ManagedMicrosandbox {
   stopping: boolean;
 }
 
+export const DEFAULT_MSB_BOOTSTRAP_SCRIPT =
+  'umask 077; printf "%s\\n" "$LETTA_WS_TOKEN" > /tmp/letta-ws-token; unset LETTA_WS_TOKEN; exec letta server --listen "ws://0.0.0.0:${LETTA_LISTEN_PORT:-4500}" --ws-auth capability-token --ws-token-file /tmp/letta-ws-token';
+
 export function makeMsbSandboxName(key: string): string {
   const hash = createHash("sha256").update(key).digest("hex").slice(0, 12);
   const nonce = randomBytes(3).toString("hex");
@@ -321,7 +324,8 @@ export class MicrosandboxProvider implements ConversationTargetProvider {
               headers: ["Authorization"],
             }
           : undefined,
-        command: this.options.command,
+        entrypoint: this.options.command ? undefined : "/bin/sh",
+        command: this.options.command ?? ["-c", DEFAULT_MSB_BOOTSTRAP_SCRIPT],
       });
     } catch (err) {
       this.reservedPorts.delete(hostPort);

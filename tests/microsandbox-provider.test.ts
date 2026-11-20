@@ -143,7 +143,8 @@ describe("Microsandbox CLI helpers & config", () => {
         allowedHosts: ["api.letta.com"],
         headers: ["Authorization"],
       },
-      command: ["sh", "-c", "echo hi"],
+      entrypoint: "/bin/sh",
+      command: ["-c", "echo hi"],
     });
 
     expect(args).toEqual([
@@ -164,9 +165,10 @@ describe("Microsandbox CLI helpers & config", () => {
       "LETTA_API_KEY:headers=[Authorization]@api.letta.com",
       "-e",
       "LETTA_WS_TOKEN=cap-tok-1",
+      "--entrypoint",
+      "/bin/sh",
       "letta-sandbox-worker:latest",
       "--",
-      "sh",
       "-c",
       "echo hi",
     ]);
@@ -182,6 +184,7 @@ describe("Microsandbox CLI helpers & config", () => {
       MSB_SECRET_INJECTION: "false",
     });
     expect(cfg1.sandboxMode).toBe("microsandbox");
+    expect(cfg1.sandbox.image).toBe("ghcr.io/letta-ai/letta-code:latest");
     expect(cfg1.sandbox.msbBin).toBe("/custom/bin/msb");
     expect(cfg1.sandbox.msbSecretInjection).toBe(false);
 
@@ -191,6 +194,7 @@ describe("Microsandbox CLI helpers & config", () => {
       SANDBOX_MODE: "microsandbox",
     });
     expect(cfg2.sandboxMode).toBe("microsandbox");
+    expect(cfg2.sandbox.image).toBe("ghcr.io/letta-ai/letta-code:latest");
     expect(cfg2.sandbox.msbSecretInjection).toBe(true);
   });
 });

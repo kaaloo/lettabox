@@ -17,6 +17,8 @@ export interface MsbRunSpec {
     allowedHosts: string[];
     headers?: string[];
   };
+  /** Optional entrypoint executable override (`--entrypoint`). */
+  entrypoint?: string;
   /** Optional command override appended after `--`. */
   command?: string[];
 }
@@ -67,6 +69,10 @@ export function buildMsbRunArgs(spec: MsbRunSpec): string[] {
 
   for (const [k, v] of Object.entries(spec.env)) {
     args.push("-e", `${k}=${v}`);
+  }
+
+  if (spec.entrypoint && spec.entrypoint.trim().length > 0) {
+    args.push("--entrypoint", spec.entrypoint.trim());
   }
 
   args.push(spec.image);

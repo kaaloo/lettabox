@@ -76,18 +76,20 @@ bun run start
 
 ## Running in Microsandbox (`msb`) Mode
 
-Uses hardware-isolated microVMs via the `msb` CLI (works on macOS Apple Silicon and Linux with KVM). When `LETTA_SERVER_URL` is HTTPS (the default `https://api.letta.com`), the provider automatically uses `msb`'s host-side secret injection (`--secret LETTA_API_KEY:headers=[Authorization]@api.letta.com`) so the real `LETTA_API_KEY` stays on the host and never enters the microVM.
+Uses hardware-isolated microVMs via the `msb` CLI (works on macOS Apple Silicon and Linux with KVM) with the official multi-arch `ghcr.io/letta-ai/letta-code:latest` image (no custom image build required). When `LETTA_SERVER_URL` is HTTPS (the default `https://api.letta.com`), the provider automatically uses `msb`'s host-side secret injection (`--secret LETTA_API_KEY:headers=[Authorization]@api.letta.com`) so the real `LETTA_API_KEY` stays on the host and never enters the microVM.
 
 ```zsh
-# Control-plane
+# Optional: pre-pull the official Letta Code OCI image (AMD64 & ARM64)
+msb pull ghcr.io/letta-ai/letta-code:latest
+
+# Terminal 1: Control-plane
 letta server --listen ws://127.0.0.1:4500
 
-# Multiplexer with Microsandbox microVMs
+# Terminal 2: Multiplexer with Microsandbox microVMs
 LETTA_API_KEY="sk-let-..." \
 LETTA_CONNECTION_NAME="letta-sandbox" \
 CONTROL_PLANE_URL="ws://127.0.0.1:4500/ws" \
 SANDBOX_MODE="msb" \
-SANDBOX_IMAGE="<your-oci-image-with-letta-code>" \
 SANDBOX_IDLE_TIMEOUT_MS="900000" \
 DEBUG_FRAMES=1 \
 bun run start

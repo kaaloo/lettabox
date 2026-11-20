@@ -160,7 +160,11 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     downstreamWsToken: downstreamWsToken || undefined,
     sandboxMode,
     sandbox: {
-      image: env.SANDBOX_IMAGE?.trim() || "letta-sandbox-worker:latest",
+      image:
+        env.SANDBOX_IMAGE?.trim() ||
+        (sandboxMode === "microsandbox"
+          ? "ghcr.io/letta-ai/letta-code:latest"
+          : "letta-sandbox-worker:latest"),
       runtime,
       containerPort: parsePositiveInt(env.SANDBOX_CONTAINER_PORT, 4500, "SANDBOX_CONTAINER_PORT"),
       idleTimeoutMs: parsePositiveInt(
