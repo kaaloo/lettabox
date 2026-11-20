@@ -8,6 +8,8 @@ import {
   type MsbRunSpec,
   parseMsbCpuCount,
   parseMsbMemoryMiB,
+  SdkMsbRunner,
+  type SdkRuntimeOps,
 } from "../src/msb-runner.ts";
 import { MultiplexerProxy } from "../src/proxy.ts";
 
@@ -540,5 +542,139 @@ describe("MicrosandboxProvider lifecycle", () => {
     const t2 = await provider.acquireForConversation("conv-crash");
     expect(t2).not.toBe(t1);
     expect(mockMsb.spawnedSpecs).toHaveLength(2);
+  });
+});
+
+describe("SdkMsbRunner runtime version matching", () => {
+  test("reuses and pins an already-matching runtime without reinstalling", async () => {
+    const fakeEnv: Record<string, string | undefined> = {};
+    let installCalls = 0;
+    const ops: SdkRuntimeOps = {
+      resolveRuntime: () => ({
+        msbPath: "/home/test/.lettabox/microsandbox/bin/msb",
+        libkrunfwPath: "/home/test/.lettabox/microsandbox/lib/libkrunfw.dylib",
+        origin: "home",
+      }),
+      resolveRuntimeVersion: async () => "0.7.16",
+      installRuntime: async () => {
+        installCalls += 1;
+        throw new Error("should not install");
+      },
+    };
+
+    const runner = new SdkMsbRunner({
+      msbHome: "/home/test/.lettabox/microsandbox",
+      expectedVersion: "0.7.16",
+      env: fakeEnv,
+      runtimeOps: ops,
+      logger: silentLogger,
+    });
+
+    await runner.ensureReady();
+    expect(installCalls).toBe(0);
+    expect(fakeEnv.MSB_HOME).toBe("/home/test/.lettabox/microsandbox");
+    expect(fakeEnv.MSB_PATH).toBe("/home/test/.lettabox/microsandbox/bin/msb");
+    expect(fakeEnv.MSB_LIBKRUNFW_PATH).toBe(
+      "/home/test/.lettabox/microsandbox/lib/libkrunfw.dylib",
+    );
+  });
+
+  test("installs matching runtime under msbHome when resolved runtime has mismatched version (e.g. 0.7.15)", async () => {
+    const fakeEnv: Record<string, string | undefined> = {};
+    const installArgs: Array<{ home?: string; version?: string; force?: boolean }> = [];
+    const ops: SdkRuntimeOps = {
+      resolveRuntime: () => ({
+        msbPath: "/opt/homebrew/bin/msb",
+        libkrunfwPath: "/opt/homebrew/lib/libkrunfw.dylib",
+        origin: "installed",
+      }),
+      resolveRuntimeVersion: async (exe) => (exe.includes(".lettabox") ? "0.7.16" : "0.7.15"),
+      installRuntime: async (cfg = {}, opts = {}) => {
+        installArgs.push({ home: cfg.home, version: opts.version, force: opts.force });
+        return {
+          msbPath: "/home/test/.lettabox/microsandbox/bin/msb",
+          libkrunfwPath: "/home/test/.lettabox/microsandbox/lib/libkrunfw.dylib",
+          origin: "home",
+        };
+      },
+    };
+
+    const runner = new SdkMsbRunner({
+      msbHome: "/home/test/.lettabox/microsandbox",
+      expectedVersion: "0.7.16",
+      env: fakeEnv,
+      runtimeOps: ops,
+      logger: silentLogger,
+    });
+
+    await runner.ensureReady();
+    expect(installArgs).toEqual([
+      { home: "/home/test/.lettabox/microsandbox", version: "0.7.16", force: true },
+    ]);
+    expect(fakeEnv.MSB_PATH).toBe("/home/test/.lettabox/microsandbox/bin/msb");
+    expect(fakeEnv.MSB_LIBKRUNFW_PATH).toBe(
+      "/home/test/.lettabox/microsandbox/lib/libkrunfw.dylib",
+    );
+  });
+
+  test("installs matching runtime when no runtime is currently installed", async () => {
+    const fakeEnv: Record<string, string | undefined> = {};
+    let installCalls = 0;
+    const ops: SdkRuntimeOps = {
+      resolveRuntime: () => {
+        throw new Error("runtime not found");
+      },
+      resolveRuntimeVersion: async () => "0.7.16",
+      installRuntime: async () => {
+        installCalls += 1;
+        return {
+          msbPath: "/home/test/.lettabox/microsandbox/bin/msb",
+          libkrunfwPath: "/home/test/.lettabox/microsandbox/lib/libkrunfw.dylib",
+          origin: "home",
+        };
+      },
+    };
+
+    const runner = new SdkMsbRunner({
+      msbHome: "/home/test/.lettabox/microsandbox",
+      expectedVersion: "0.7.16",
+      env: fakeEnv,
+      runtimeOps: ops,
+      logger: silentLogger,
+    });
+
+    await runner.ensureReady();
+    expect(installCalls).toBe(1);
+    expect(fakeEnv.MSB_PATH).toBe("/home/test/.lettabox/microsandbox/bin/msb");
+  });
+
+  test("rejects explicit MSB_PATH with mismatched version instead of silently overriding", async () => {
+    const fakeEnv: Record<string, string | undefined> = { MSB_PATH: "/custom/msb-0.7.15" };
+    let installCalls = 0;
+    const ops: SdkRuntimeOps = {
+      resolveRuntime: () => ({
+        msbPath: "/custom/msb-0.7.15",
+        libkrunfwPath: "/custom/libkrunfw.dylib",
+        origin: "environment",
+      }),
+      resolveRuntimeVersion: async () => "0.7.15",
+      installRuntime: async () => {
+        installCalls += 1;
+        throw new Error("should not install");
+      },
+    };
+
+    const runner = new SdkMsbRunner({
+      msbHome: "/home/test/.lettabox/microsandbox",
+      expectedVersion: "0.7.16",
+      env: fakeEnv,
+      runtimeOps: ops,
+      logger: silentLogger,
+    });
+
+    await expect(runner.ensureReady()).rejects.toThrow(
+      "is version 0.7.15, but lettabox requires 0.7.16",
+    );
+    expect(installCalls).toBe(0);
   });
 });

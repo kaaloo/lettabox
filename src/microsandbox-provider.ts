@@ -145,7 +145,12 @@ export class MicrosandboxProvider implements ConversationTargetProvider {
   constructor(options: MicrosandboxProviderOptions) {
     this.options = options;
     this.msb =
-      options.msb ?? new SdkMsbRunner({ msbBin: options.msbBin, msbHome: options.msbHome });
+      options.msb ??
+      new SdkMsbRunner({
+        msbBin: options.msbBin,
+        msbHome: options.msbHome,
+        logger: options.logger,
+      });
     this.guestPort = options.guestPort ?? 4500;
     this.idleTimeoutMs = options.idleTimeoutMs ?? 30 * 60_000;
     this.reaperIntervalMs =
@@ -157,6 +162,10 @@ export class MicrosandboxProvider implements ConversationTargetProvider {
     this.now = options.now ?? (() => Date.now());
 
     this.startReaper();
+  }
+
+  async ensureReady(): Promise<void> {
+    await this.msb.ensureReady?.();
   }
 
   get activeCount(): number {
