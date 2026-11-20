@@ -221,15 +221,15 @@ export class MicrosandboxProvider implements ConversationTargetProvider {
       void this.destroySandbox(existing, "evicted dead sandbox");
     }
 
-    const warm = this.claimWarmSandbox({ conversationId });
-    if (warm) {
-      this.conversationMap.set(conversationId, warm);
-      return warm.target;
-    }
-
     const spawnKey = `conv:${conversationId}`;
     let inFlight = this.inFlightSpawns.get(spawnKey);
     if (!inFlight) {
+      const warm = this.claimWarmSandbox({ conversationId });
+      if (warm) {
+        this.conversationMap.set(conversationId, warm);
+        return warm.target;
+      }
+
       inFlight = this.spawnSandbox({ conversationId })
         .then((sandbox) => {
           if (this.closed) {
@@ -268,15 +268,15 @@ export class MicrosandboxProvider implements ConversationTargetProvider {
       void this.destroySandbox(existing, "evicted dead pending sandbox");
     }
 
-    const warm = this.claimWarmSandbox({ pendingRequestId: requestId });
-    if (warm) {
-      this.pendingMap.set(requestId, warm);
-      return warm.target;
-    }
-
     const spawnKey = `req:${requestId}`;
     let inFlight = this.inFlightSpawns.get(spawnKey);
     if (!inFlight) {
+      const warm = this.claimWarmSandbox({ pendingRequestId: requestId });
+      if (warm) {
+        this.pendingMap.set(requestId, warm);
+        return warm.target;
+      }
+
       inFlight = this.spawnSandbox({ pendingRequestId: requestId })
         .then((sandbox) => {
           if (this.closed) {

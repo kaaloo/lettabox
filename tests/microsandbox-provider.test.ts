@@ -1125,4 +1125,54 @@ describe("SdkMsbRunner detached command launch and diagnostics", () => {
     expect(provider.warmPoolCount).toBe(1);
     expect(attempts).toBe(2);
   });
+
+  test("concurrent acquisition awaits in-flight cold spawn instead of claiming a newly refilled warm standby", async () => {
+    const mockMsb = createMockMsbRunner();
+    cleanups.push(() => mockMsb.cleanupAll());
+
+    let releaseColdSpawn!: () => void;
+    const coldSpawnGate = new Promise<void>((resolve) => {
+      releaseColdSpawn = resolve;
+    });
+
+    const origRun = mockMsb.runner.runSandbox.bind(mockMsb.runner);
+    mockMsb.runner.runSandbox = async (spec) => {
+      if (spec.labels["letta-sandbox.conversation"] === "conv-race") {
+        await coldSpawnGate;
+      }
+      return origRun(spec);
+    };
+
+    const provider = new MicrosandboxProvider({
+      image: "letta-sandbox-worker:latest",
+      lettaApiKey: "test-key",
+      lettaServerUrl: "https://api.letta.com",
+      warmPoolSize: 1,
+      idleTimeoutMs: 60_000,
+      reaperIntervalMs: 60_000,
+      msb: mockMsb.runner,
+      logger: silentLogger,
+      onMessage: () => {},
+    });
+    cleanups.push(() => provider.closeAllAsync());
+
+    // Start a cold spawn for conv-race while the warm pool is still empty
+    const firstAcquire = provider.acquireForConversation("conv-race");
+    // Now warm the standby pool while the cold spawn is still in flight
+    await provider.ensureReady();
+    expect(provider.warmPoolCount).toBe(1);
+
+    // Second concurrent acquire for the SAME conversation must join the in-flight cold spawn
+    const secondAcquire = provider.acquireForConversation("conv-race");
+    expect(provider.warmPoolCount).toBe(1);
+
+    releaseColdSpawn();
+    const [t1, t2] = await Promise.all([firstAcquire, secondAcquire]);
+    expect(t1).toBe(t2);
+    expect(provider.warmPoolCount).toBe(1);
+
+    // Shutdown cleanly destroys every spawned sandbox (no leaked workers)
+    await provider.closeAllAsync();
+    expect(mockMsb.removedNames).toHaveLength(mockMsb.spawnedSpecs.length);
+  });
 });
