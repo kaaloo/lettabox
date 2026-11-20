@@ -1,6 +1,23 @@
-# Letta WebSocket Multiplexer POC (`letta-sandbox`)
+# Letta WebSocket Multiplexer (`letta-sandbox`)
 
-Expose a **single unified remote environment** to `chat.letta.com` from a self-hosted VPS while isolating every Letta conversation (`conversation_id`) inside its own ephemeral gVisor sandbox container running an unmodified `letta server`.
+Expose a **single unified remote environment** to `chat.letta.com` while isolating every Letta conversation (`conversation_id`) inside its own ephemeral **Microsandbox (`msb`) microVM** running an unmodified `letta server`.
+
+Works cross-platform on **macOS (Apple Silicon)** and **Linux (KVM)** using the official multi-arch `ghcr.io/letta-ai/letta-code:latest` OCI image—with **host-side secret injection** so your `LETTA_API_KEY` stays on the host and never enters the microVM.
+
+## Architecture
+
+```text
+chat.letta.com / Letta Cloud Relay
+        │  (single paired-generation split-channel WebSocket: control + stream)
+        ▼
+  letta-sandbox (Envelope Router + event_seq rewriter)
+   ├── Control-plane (1 persistent letta server --listen)
+   │     └─ computer-level commands, conv=default sync, stateless conversation CRUD, PTY
+   └── Conversation-plane (MicrosandboxProvider — 1 ephemeral msb microVM per conversation_id)
+         ├─ conv-A ─▶ microVM A (letta server --listen + capability-token auth)
+         ├─ conv-B ─▶ microVM B (letta server --listen + capability-token auth)
+         └─ idle reaper terminates & removes inactive microVMs automatically
+```
 
 ## Documentation
 
@@ -12,7 +29,7 @@ Expose a **single unified remote environment** to `chat.letta.com` from a self-h
 - [x] **Milestone 1:** Protocol inspection of `letta-ai/letta-code` (`src/websocket/app-server.ts`, `src/websocket/listen-register.ts`, `src/websocket/listener/*`, `src/types/protocol_v2.ts`)
 - [x] **Milestone 2:** Passthrough proxy (verified live with `chat.letta.com`)
 - [x] **Milestone 3:** Envelope router (`conversation_id` routing, `request_id` correlation, `event_seq` rewriting — verified live with `chat.letta.com`)
-- [ ] **Milestone 4:** Lazy gVisor (`runsc`) container spawning and idle reaping per `conversation_id` (implemented & verified against mock Docker suite; ready for live Docker/gVisor test)
+- [x] **Milestone 4:** Lazy Microsandbox (`msb`) microVM spawning, host-side secret injection, and idle reaping per `conversation_id` (verified live with `chat.letta.com`)
 
 ## Development
 
@@ -20,58 +37,6 @@ Expose a **single unified remote environment** to `chat.letta.com` from a self-h
 bun install
 bun run typecheck
 bun test
-```
-
-## Running in Static Worker Mode (Milestone 2 / Milestone 3)
-
-Start the control-plane `letta server` and one or more conversation worker `letta server` instances:
-
-```zsh
-# Control-plane (computer-level commands, default sync, stateless conversation CRUD)
-letta server --listen ws://127.0.0.1:4500
-
-# Conversation worker(s) (optional; omit WORKER_URLS to run in single-server Milestone 2 mode)
-letta server --listen ws://127.0.0.1:4501
-letta server --listen ws://127.0.0.1:4502
-```
-
-Then start the multiplexer:
-
-```zsh
-LETTA_API_KEY="sk-let-..." \
-LETTA_CONNECTION_NAME="letta-sandbox" \
-CONTROL_PLANE_URL="ws://127.0.0.1:4500/ws" \
-WORKER_URLS="ws://127.0.0.1:4501/ws,ws://127.0.0.1:4502/ws" \
-DEBUG_FRAMES=1 \
-bun run start
-```
-
-## Running in Docker + gVisor Mode (Milestone 4)
-
-Build the sandbox worker image (unmodified `@letta-ai/letta-code` with `--ws-auth capability-token`):
-
-```zsh
-docker build -f docker/Dockerfile.sandbox -t letta-sandbox-worker:latest .
-```
-
-Start the lightweight control-plane `letta server`:
-
-```zsh
-letta server --listen ws://127.0.0.1:4500
-```
-
-Start the multiplexer in `docker` mode (on a Linux VPS with gVisor `runsc` installed; pass `SANDBOX_RUNTIME=""` to test with default Docker `runc` on macOS/Docker Desktop):
-
-```zsh
-LETTA_API_KEY="sk-let-..." \
-LETTA_CONNECTION_NAME="letta-sandbox" \
-CONTROL_PLANE_URL="ws://127.0.0.1:4500/ws" \
-SANDBOX_MODE="docker" \
-SANDBOX_IMAGE="letta-sandbox-worker:latest" \
-SANDBOX_RUNTIME="runsc" \
-SANDBOX_IDLE_TIMEOUT_MS="900000" \
-DEBUG_FRAMES=1 \
-bun run start
 ```
 
 ## Running in Microsandbox (`msb`) Mode
@@ -95,6 +60,33 @@ DEBUG_FRAMES=1 \
 bun run start
 ```
 
+Inspect active microVMs at any time:
+
+```zsh
+msb ls --label letta-sandbox.managed=true
+```
+
+## Running in Static Worker Mode
+
+For debugging or routing across pre-running local `letta server --listen` processes:
+
+```zsh
+# Control-plane
+letta server --listen ws://127.0.0.1:4500
+
+# Conversation worker(s) (optional; omit WORKER_URLS for single-server passthrough)
+letta server --listen ws://127.0.0.1:4501
+letta server --listen ws://127.0.0.1:4502
+
+# Multiplexer
+LETTA_API_KEY="sk-let-..." \
+LETTA_CONNECTION_NAME="letta-sandbox" \
+CONTROL_PLANE_URL="ws://127.0.0.1:4500/ws" \
+WORKER_URLS="ws://127.0.0.1:4501/ws,ws://127.0.0.1:4502/ws" \
+DEBUG_FRAMES=1 \
+bun run start
+```
+
 ### Environment Variables
 
 | Variable | Default | Description |
@@ -104,15 +96,13 @@ bun run start
 | `LETTA_CONNECTION_NAME` | `letta-sandbox-<hostname>` | Display name shown in `chat.letta.com` |
 | `LETTA_DEVICE_ID` | persisted in `~/.letta-sandbox/device-id` | Stable UUID for this remote environment |
 | `CONTROL_PLANE_URL` / `DOWNSTREAM_URL` | `ws://127.0.0.1:4500/ws` | Control-plane `letta server --listen` WebSocket URL |
-| `SANDBOX_MODE` | `static` | `static` (`WORKER_URLS`), `docker` (gVisor/Docker), or `microsandbox` / `msb` (`msb` microVMs) |
+| `SANDBOX_MODE` | `static` | `static` (`WORKER_URLS`) or `microsandbox` / `msb` (`msb` microVMs) |
 | `WORKER_URLS` | *(empty — falls back to control-plane)* | Comma-separated worker URLs when `SANDBOX_MODE=static` |
-| `SANDBOX_IMAGE` | `letta-sandbox-worker:latest` | OCI image for ephemeral conversation sandboxes |
-| `SANDBOX_RUNTIME` | `runsc` | Docker OCI runtime (`runsc` for gVisor; set `""` for default Docker runtime) |
+| `SANDBOX_IMAGE` | `ghcr.io/letta-ai/letta-code:latest` | OCI image for ephemeral conversation microVMs |
 | `MSB_PATH` | `msb` | Path to the `msb` binary when `SANDBOX_MODE=microsandbox` / `msb` |
 | `MSB_SECRET_INJECTION` | `true` | Use host-side `--secret` injection for `LETTA_API_KEY` on HTTPS Letta servers |
-| `SANDBOX_IDLE_TIMEOUT_MS` | `900000` (15m) | Idle duration before a conversation sandbox is reaped |
-| `SANDBOX_MEMORY_LIMIT` / `SANDBOX_CPU_LIMIT` / `SANDBOX_PIDS_LIMIT` | `1g` / `1` / `256` | Per-sandbox resource limits |
+| `SANDBOX_IDLE_TIMEOUT_MS` | `900000` (15m) | Idle duration before a conversation microVM is reaped |
+| `SANDBOX_MEMORY_LIMIT` / `SANDBOX_CPU_LIMIT` | `1G` / `1` | Per-microVM resource limits |
 | `DOWNSTREAM_WS_TOKEN` / `DOWNSTREAM_WS_TOKEN_FILE` | *(optional)* | Capability token when using `--ws-auth capability-token` |
 | `WORKER_WS_TOKEN` / `WORKER_WS_TOKEN_FILE` | *(falls back to `DOWNSTREAM_WS_TOKEN`)* | Capability token for static worker instances |
 | `DEBUG_FRAMES` | `false` | Set `1` or `true` to log routed frame envelope summaries & `event_seq` rewrites |
-

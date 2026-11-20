@@ -1,10 +1,18 @@
 import { createHash, randomBytes } from "node:crypto";
 import { createServer } from "node:net";
 import { DownstreamClient } from "./downstream.ts";
-import { MANAGED_LABEL_KEY, MANAGED_LABEL_VALUE, type SandboxLogger } from "./gvisor-provider.ts";
 import { CliMsbRunner, type MsbRunner } from "./msb-runner.ts";
 import { waitForDownstreamHealth } from "./register.ts";
 import type { ConversationTargetProvider, DownstreamTarget } from "./router.ts";
+
+export interface SandboxLogger {
+  info: (msg: string) => void;
+  warn: (msg: string) => void;
+  error: (msg: string) => void;
+}
+
+export const MANAGED_LABEL_KEY = "letta-sandbox.managed";
+export const MANAGED_LABEL_VALUE = "true";
 
 export interface MicrosandboxProviderOptions {
   image: string;

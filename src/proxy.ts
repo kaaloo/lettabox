@@ -1,7 +1,5 @@
 import type { ProxyConfig } from "./config.ts";
-import type { DockerRunner } from "./docker-runner.ts";
 import { DownstreamClient } from "./downstream.ts";
-import { DockerGvisorProvider } from "./gvisor-provider.ts";
 import { MicrosandboxProvider } from "./microsandbox-provider.ts";
 import type { MsbRunner } from "./msb-runner.ts";
 import { fetchAppServerInfo, waitForDownstreamHealth } from "./register.ts";
@@ -31,7 +29,6 @@ export interface PassthroughProxyOptions {
   config: ProxyConfig;
   logger?: Logger;
   fetchImpl?: typeof fetch;
-  docker?: DockerRunner;
   msb?: MsbRunner;
   allocatePort?: () => Promise<number>;
   onTerminalClose?: (reason: string) => void;
@@ -42,7 +39,6 @@ export class PassthroughProxy {
   private readonly config: ProxyConfig;
   private readonly logger: Logger;
   private readonly fetchImpl?: typeof fetch;
-  private readonly docker?: DockerRunner;
   private readonly msb?: MsbRunner;
   private readonly allocatePort?: () => Promise<number>;
   private readonly onTerminalClose?: (reason: string) => void;
@@ -59,7 +55,6 @@ export class PassthroughProxy {
     this.config = options.config;
     this.logger = options.logger ?? defaultLogger;
     this.fetchImpl = options.fetchImpl;
-    this.docker = options.docker;
     this.msb = options.msb;
     this.allocatePort = options.allocatePort;
     this.onTerminalClose = options.onTerminalClose;
@@ -86,11 +81,9 @@ export class PassthroughProxy {
     const cmdCount = (appServerInfo.supported_commands ?? appServerInfo.supportedCommands ?? [])
       .length;
     const modeDesc =
-      this.config.sandboxMode === "docker"
-        ? `docker sandbox mode (image=${this.config.sandbox.image}, runtime=${this.config.sandbox.runtime || "default"})`
-        : this.config.sandboxMode === "microsandbox"
-          ? `microsandbox mode (image=${this.config.sandbox.image}, secretProxy=${this.config.sandbox.msbSecretInjection ?? true})`
-          : `${this.config.workerWsUrls.length} configured worker(s)`;
+      this.config.sandboxMode === "microsandbox"
+        ? `microsandbox mode (image=${this.config.sandbox.image}, secretProxy=${this.config.sandbox.msbSecretInjection})`
+        : `${this.config.workerWsUrls.length} configured worker(s)`;
     this.logger.info(
       `Control-plane ready (letta-code ${version}, ${cmdCount} supported_commands, ${modeDesc})`,
     );
@@ -130,32 +123,7 @@ export class PassthroughProxy {
     }
 
     let provider: ConversationTargetProvider;
-    if (this.config.sandboxMode === "docker") {
-      const gvisor = new DockerGvisorProvider({
-        image: this.config.sandbox.image,
-        runtime: this.config.sandbox.runtime,
-        containerPort: this.config.sandbox.containerPort,
-        memoryLimit: this.config.sandbox.memoryLimit,
-        cpuLimit: this.config.sandbox.cpuLimit,
-        pidsLimit: this.config.sandbox.pidsLimit,
-        network: this.config.sandbox.network,
-        lettaApiKey: this.config.lettaApiKey,
-        lettaServerUrl: this.config.lettaServerUrl,
-        idleTimeoutMs: this.config.sandbox.idleTimeoutMs,
-        reaperIntervalMs: this.config.sandbox.reaperIntervalMs,
-        startTimeoutMs: this.config.sandbox.startTimeoutMs,
-        reconnectBaseDelayMs: this.config.reconnectBaseDelayMs,
-        reconnectMaxDelayMs: this.config.reconnectMaxDelayMs,
-        docker: this.docker,
-        fetchImpl: this.fetchImpl,
-        logger: this.logger,
-        onMessage: (target, raw) => {
-          this.router?.handleDownstreamMessage(target, raw);
-        },
-      });
-      this.asyncCloseProvider = () => gvisor.closeAllAsync();
-      provider = gvisor;
-    } else if (this.config.sandboxMode === "microsandbox") {
+    if (this.config.sandboxMode === "microsandbox") {
       const msbProvider = new MicrosandboxProvider({
         image: this.config.sandbox.image,
         msbBin: this.config.sandbox.msbBin,

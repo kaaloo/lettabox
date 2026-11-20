@@ -3,21 +3,18 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir, hostname } from "node:os";
 import { dirname, join } from "node:path";
 
-export type SandboxMode = "static" | "docker" | "microsandbox";
+export type SandboxMode = "static" | "microsandbox";
 
 export interface SandboxConfig {
   image: string;
-  runtime?: string;
   containerPort: number;
   idleTimeoutMs: number;
   reaperIntervalMs: number;
   startTimeoutMs: number;
   memoryLimit: string;
   cpuLimit: string;
-  pidsLimit: number;
-  network?: string;
   msbBin?: string;
-  msbSecretInjection?: boolean;
+  msbSecretInjection: boolean;
 }
 
 export interface ProxyConfig {
@@ -96,14 +93,11 @@ function parseSandboxMode(value: string | undefined): SandboxMode {
   if (!normalized || normalized === "static") {
     return "static";
   }
-  if (normalized === "docker") {
-    return "docker";
-  }
   if (normalized === "microsandbox" || normalized === "msb") {
     return "microsandbox";
   }
   throw new Error(
-    `Invalid SANDBOX_MODE: ${value} (expected "static", "docker", or "microsandbox"/"msb")`,
+    `Invalid SANDBOX_MODE: ${value} (expected "static" or "microsandbox"/"msb")`,
   );
 }
 
@@ -143,9 +137,6 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
   }
 
   const sandboxMode = parseSandboxMode(env.SANDBOX_MODE);
-  const runtimeRaw = env.SANDBOX_RUNTIME;
-  const runtime =
-    runtimeRaw === undefined ? "runsc" : runtimeRaw.trim().length > 0 ? runtimeRaw.trim() : undefined;
   const msbSecretInjection =
     env.MSB_SECRET_INJECTION !== "0" && env.MSB_SECRET_INJECTION !== "false";
 
@@ -160,12 +151,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     downstreamWsToken: downstreamWsToken || undefined,
     sandboxMode,
     sandbox: {
-      image:
-        env.SANDBOX_IMAGE?.trim() ||
-        (sandboxMode === "microsandbox"
-          ? "ghcr.io/letta-ai/letta-code:latest"
-          : "letta-sandbox-worker:latest"),
-      runtime,
+      image: env.SANDBOX_IMAGE?.trim() || "ghcr.io/letta-ai/letta-code:latest",
       containerPort: parsePositiveInt(env.SANDBOX_CONTAINER_PORT, 4500, "SANDBOX_CONTAINER_PORT"),
       idleTimeoutMs: parsePositiveInt(
         env.SANDBOX_IDLE_TIMEOUT_MS,
@@ -182,10 +168,8 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
         30_000,
         "SANDBOX_START_TIMEOUT_MS",
       ),
-      memoryLimit: env.SANDBOX_MEMORY_LIMIT?.trim() || "1g",
+      memoryLimit: env.SANDBOX_MEMORY_LIMIT?.trim() || "1G",
       cpuLimit: env.SANDBOX_CPU_LIMIT?.trim() || "1",
-      pidsLimit: parsePositiveInt(env.SANDBOX_PIDS_LIMIT, 256, "SANDBOX_PIDS_LIMIT"),
-      network: env.SANDBOX_NETWORK?.trim() || undefined,
       msbBin: env.MSB_PATH?.trim() || undefined,
       msbSecretInjection,
     },
