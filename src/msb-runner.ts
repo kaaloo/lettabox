@@ -2,6 +2,8 @@ import { dlopen, FFIType } from "bun:ffi";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import {
+  Image,
+  ImageNotFoundError,
   installRuntime,
   type ResolvedRuntime,
   resolveRuntime,
@@ -88,7 +90,7 @@ export interface MsbRunSpec {
 }
 
 export interface MsbRunner {
-  ensureReady?(): Promise<void>;
+  ensureReady?(image?: string): Promise<void>;
   runSandbox(spec: MsbRunSpec): Promise<string>;
   removeSandbox(name: string): Promise<void>;
   readSandboxLogs?(name: string): Promise<string | undefined>;
@@ -98,6 +100,15 @@ export interface SdkRuntimeOps {
   resolveRuntime: typeof resolveRuntime;
   resolveRuntimeVersion: typeof resolveRuntimeVersion;
   installRuntime: typeof installRuntime;
+}
+
+export interface SdkImageOps {
+  isCached: (reference: string) => Promise<boolean>;
+  pull: (
+    msbPath: string,
+    reference: string,
+    env: Record<string, string | undefined>,
+  ) => Promise<void>;
 }
 
 export interface SdkSandboxInstance {
@@ -144,9 +155,11 @@ export interface SdkMsbRunnerLogger {
 export interface SdkMsbRunnerOptions {
   msbBin?: string;
   msbHome?: string;
+  image?: string;
   expectedVersion?: string;
   env?: Record<string, string | undefined>;
   runtimeOps?: SdkRuntimeOps;
+  imageOps?: SdkImageOps;
   sandboxOps?: SdkSandboxOps;
   logger?: SdkMsbRunnerLogger;
 }
@@ -229,16 +242,63 @@ export function resolveMsbLaunchCommand(spec: MsbRunSpec): { cmd: string; args: 
   return null;
 }
 
+function isLocalImagePath(reference: string): boolean {
+  return reference.startsWith("/") || reference.startsWith("./") || reference.startsWith("../");
+}
+
+const defaultSdkImageOps: SdkImageOps = {
+  async isCached(reference: string): Promise<boolean> {
+    if (isLocalImagePath(reference)) return true;
+    try {
+      await Image.get(reference);
+      return true;
+    } catch (error) {
+      if (error instanceof ImageNotFoundError) return false;
+      throw error;
+    }
+  },
+  async pull(
+    msbPath: string,
+    reference: string,
+    env: Record<string, string | undefined>,
+  ): Promise<void> {
+    const cleanEnv: Record<string, string> = {};
+    for (const [k, v] of Object.entries(env)) {
+      if (v !== undefined) cleanEnv[k] = v;
+    }
+    const proc = Bun.spawn([msbPath, "pull", "--quiet", reference], {
+      env: cleanEnv,
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [stdout, stderr, exitCode] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+      proc.exited,
+    ]);
+    if (exitCode !== 0) {
+      const detail = (stderr || stdout).trim();
+      throw new Error(
+        `Failed to pull microsandbox image ${reference} (exit ${exitCode})${detail ? `: ${detail}` : ""}`,
+      );
+    }
+  },
+};
+
 export class SdkMsbRunner implements MsbRunner {
   private readonly msbHome: string;
   private readonly explicitMsbBin?: string;
+  private readonly defaultImage?: string;
   private readonly expectedVersion: string;
   private readonly env: Record<string, string | undefined>;
   private readonly mirrorToNativeEnv: boolean;
   private readonly runtimeOps: SdkRuntimeOps;
+  private readonly imageOps: SdkImageOps;
   private readonly sandboxOps: SdkSandboxOps;
   private readonly logger?: SdkMsbRunnerLogger;
   private readyPromise: Promise<ResolvedRuntime> | null = null;
+  private readonly readyImages = new Map<string, Promise<void>>();
 
   constructor(options: SdkMsbRunnerOptions = {}) {
     this.mirrorToNativeEnv = options.env === undefined;
@@ -248,12 +308,14 @@ export class SdkMsbRunner implements MsbRunner {
       this.env.MSB_HOME?.trim() ||
       join(homedir(), ".lettabox", "microsandbox");
     this.explicitMsbBin = options.msbBin?.trim() || this.env.MSB_PATH?.trim() || undefined;
+    this.defaultImage = options.image?.trim() || undefined;
     this.expectedVersion = options.expectedVersion ?? EXPECTED_MSB_RUNTIME_VERSION;
     this.runtimeOps = options.runtimeOps ?? {
       resolveRuntime,
       resolveRuntimeVersion,
       installRuntime,
     };
+    this.imageOps = options.imageOps ?? defaultSdkImageOps;
     this.sandboxOps = options.sandboxOps ?? {
       create: (spec) => buildSdkSandbox(spec).create(),
       get: (name) => Sandbox.get(name),
@@ -261,18 +323,16 @@ export class SdkMsbRunner implements MsbRunner {
     this.logger = options.logger;
   }
 
-  async ensureReady(): Promise<void> {
-    if (!this.readyPromise) {
-      this.readyPromise = this.resolveOrInstallMatchingRuntime().catch((err) => {
-        this.readyPromise = null;
-        throw err;
-      });
+  async ensureReady(image?: string): Promise<void> {
+    const resolved = await this.ensureRuntimeReady();
+    const targetImage = image?.trim() || this.defaultImage;
+    if (targetImage) {
+      await this.ensureImageCached(resolved, targetImage);
     }
-    await this.readyPromise;
   }
 
   async runSandbox(spec: MsbRunSpec): Promise<string> {
-    await this.ensureReady();
+    await this.ensureReady(spec.image);
     const sandbox = await this.sandboxOps.create(spec);
     const launch = resolveMsbLaunchCommand(spec);
     try {
@@ -291,7 +351,7 @@ export class SdkMsbRunner implements MsbRunner {
   }
 
   async removeSandbox(name: string): Promise<void> {
-    await this.ensureReady();
+    await this.ensureRuntimeReady();
     try {
       const handle = await this.sandboxOps.get(name);
       await handle.destroy({ force: true });
@@ -302,7 +362,7 @@ export class SdkMsbRunner implements MsbRunner {
   }
 
   async readSandboxLogs(name: string): Promise<string | undefined> {
-    await this.ensureReady();
+    await this.ensureRuntimeReady();
     try {
       const handle = await this.sandboxOps.get(name);
       const parts: string[] = [];
@@ -350,6 +410,44 @@ export class SdkMsbRunner implements MsbRunner {
       if (error instanceof SandboxNotFoundError) return undefined;
       return undefined;
     }
+  }
+
+  private async ensureRuntimeReady(): Promise<ResolvedRuntime> {
+    if (!this.readyPromise) {
+      this.readyPromise = this.resolveOrInstallMatchingRuntime().catch((err) => {
+        this.readyPromise = null;
+        throw err;
+      });
+    }
+    return this.readyPromise;
+  }
+
+  private async ensureImageCached(resolved: ResolvedRuntime, reference: string): Promise<void> {
+    let pending = this.readyImages.get(reference);
+    if (!pending) {
+      pending = (async () => {
+        const cached = await this.imageOps.isCached(reference);
+        if (cached) {
+          this.logger?.info(`Microsandbox image ${reference} cached`);
+          return;
+        }
+        this.logger?.info(
+          `Pulling microsandbox image ${reference} into ${this.msbHome} (first run may take a minute)...`,
+        );
+        await this.imageOps.pull(resolved.msbPath, reference, {
+          ...this.env,
+          MSB_HOME: this.msbHome,
+          MSB_PATH: resolved.msbPath,
+          MSB_LIBKRUNFW_PATH: resolved.libkrunfwPath,
+        });
+        this.logger?.info(`Microsandbox image ${reference} ready`);
+      })().catch((err) => {
+        this.readyImages.delete(reference);
+        throw err;
+      });
+      this.readyImages.set(reference, pending);
+    }
+    await pending;
   }
 
   private setEnvVar(key: string, value: string): void {
