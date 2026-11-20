@@ -378,4 +378,38 @@ describe("EnvelopeRouter", () => {
       "input",
     ]);
   });
+
+  test("routes non-CRUD frames with top-level conversation_id (e.g. abort_message) to conversation worker", async () => {
+    const control = makeFakeTarget("control-plane");
+    const fake = makeFakeProvider();
+
+    const router = new EnvelopeRouter({
+      controlPlane: control.target,
+      conversationProvider: fake.provider,
+      sendToUpstream: () => "control",
+    });
+
+    await router.handleUpstreamMessage(
+      JSON.stringify({
+        type: "input",
+        request_id: "r1",
+        runtime: { agent_id: "ag-1", conversation_id: "conv-int" },
+        text: "long task",
+      }),
+    );
+    await router.handleUpstreamMessage(
+      JSON.stringify({
+        type: "abort_message",
+        request_id: "r2",
+        conversation_id: "conv-int",
+      }),
+    );
+
+    expect(control.sent).toHaveLength(0);
+    expect(fake.workers.size).toBe(1);
+    expect(fake.convMap.get("conv-int")!.parsed().map((f) => f.type)).toEqual([
+      "input",
+      "abort_message",
+    ]);
+  });
 });

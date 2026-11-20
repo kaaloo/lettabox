@@ -155,7 +155,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
       containerPort: parsePositiveInt(env.SANDBOX_CONTAINER_PORT, 4500, "SANDBOX_CONTAINER_PORT"),
       idleTimeoutMs: parsePositiveInt(
         env.SANDBOX_IDLE_TIMEOUT_MS,
-        15 * 60_000,
+        30 * 60_000,
         "SANDBOX_IDLE_TIMEOUT_MS",
       ),
       reaperIntervalMs: parsePositiveInt(
@@ -168,8 +168,8 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
         30_000,
         "SANDBOX_START_TIMEOUT_MS",
       ),
-      memoryLimit: env.SANDBOX_MEMORY_LIMIT?.trim() || "1G",
-      cpuLimit: env.SANDBOX_CPU_LIMIT?.trim() || "1",
+      memoryLimit: env.SANDBOX_MEMORY_LIMIT?.trim() || "2G",
+      cpuLimit: env.SANDBOX_CPU_LIMIT?.trim() || "2",
       msbBin: env.MSB_PATH?.trim() || undefined,
       msbSecretInjection,
     },
