@@ -31,6 +31,7 @@ export interface MicrosandboxProviderOptions {
   guestPort?: number;
   memoryLimit?: string;
   cpuLimit?: string;
+  warmPoolSize?: number;
   lettaApiKey: string;
   lettaServerUrl: string;
   useSecretInjection?: boolean;
@@ -127,6 +128,7 @@ export class MicrosandboxProvider implements ConversationTargetProvider {
   private readonly options: MicrosandboxProviderOptions;
   private readonly msb: MsbRunner;
   private readonly guestPort: number;
+  private readonly warmPoolSize: number;
   private readonly idleTimeoutMs: number;
   private readonly reaperIntervalMs: number;
   private readonly startTimeoutMs: number;
@@ -137,6 +139,8 @@ export class MicrosandboxProvider implements ConversationTargetProvider {
   private readonly conversationMap = new Map<string, ManagedMicrosandbox>();
   private readonly pendingMap = new Map<string, ManagedMicrosandbox>();
   private readonly inFlightSpawns = new Map<string, Promise<ManagedMicrosandbox>>();
+  private readonly warmPool: ManagedMicrosandbox[] = [];
+  private readonly warmRefills = new Set<Promise<void>>();
   private readonly reservedPorts = new Set<number>();
   private reaperTimer: ReturnType<typeof setInterval> | null = null;
   private closed = false;
@@ -153,6 +157,7 @@ export class MicrosandboxProvider implements ConversationTargetProvider {
         logger: options.logger,
       });
     this.guestPort = options.guestPort ?? 4500;
+    this.warmPoolSize = Math.max(0, options.warmPoolSize ?? 0);
     this.idleTimeoutMs = options.idleTimeoutMs ?? 30 * 60_000;
     this.reaperIntervalMs =
       options.reaperIntervalMs ??
@@ -167,10 +172,21 @@ export class MicrosandboxProvider implements ConversationTargetProvider {
 
   async ensureReady(): Promise<void> {
     await this.msb.ensureReady?.(this.options.image);
+    if (this.warmPoolSize > 0 && !this.closed) {
+      this.options.logger?.info(
+        `Pre-warming ${this.warmPoolSize} standby microsandbox(es) before connecting upstream...`,
+      );
+      this.refillWarmPool();
+      await Promise.allSettled([...this.warmRefills]);
+    }
   }
 
   get activeCount(): number {
     return this.conversationMap.size + this.pendingMap.size;
+  }
+
+  get warmPoolCount(): number {
+    return this.warmPool.filter((s) => !s.stopping && !s.client.isClosed).length;
   }
 
   listActiveSandboxes(): ActiveSandboxInfo[] {
@@ -201,6 +217,12 @@ export class MicrosandboxProvider implements ConversationTargetProvider {
       // Evict dead/closed sandbox so a fresh microVM is spawned immediately
       this.conversationMap.delete(conversationId);
       void this.destroySandbox(existing, "evicted dead sandbox");
+    }
+
+    const warm = this.claimWarmSandbox({ conversationId });
+    if (warm) {
+      this.conversationMap.set(conversationId, warm);
+      return warm.target;
     }
 
     const spawnKey = `conv:${conversationId}`;
@@ -241,6 +263,12 @@ export class MicrosandboxProvider implements ConversationTargetProvider {
       }
       this.pendingMap.delete(requestId);
       void this.destroySandbox(existing, "evicted dead pending sandbox");
+    }
+
+    const warm = this.claimWarmSandbox({ pendingRequestId: requestId });
+    if (warm) {
+      this.pendingMap.set(requestId, warm);
+      return warm.target;
     }
 
     const spawnKey = `req:${requestId}`;
@@ -333,11 +361,67 @@ export class MicrosandboxProvider implements ConversationTargetProvider {
       this.reaperTimer = null;
     }
 
-    const allSandboxes = [...this.conversationMap.values(), ...this.pendingMap.values()];
+    const allSandboxes = [
+      ...this.conversationMap.values(),
+      ...this.pendingMap.values(),
+      ...this.warmPool,
+    ];
     this.conversationMap.clear();
     this.pendingMap.clear();
+    this.warmPool.length = 0;
 
-    await Promise.all(allSandboxes.map((sandbox) => this.destroySandbox(sandbox, "shutdown")));
+    await Promise.all([
+      ...allSandboxes.map((sandbox) => this.destroySandbox(sandbox, "shutdown")),
+      ...[...this.warmRefills],
+    ]);
+  }
+
+  private claimWarmSandbox(scope: {
+    conversationId?: string;
+    pendingRequestId?: string;
+  }): ManagedMicrosandbox | undefined {
+    while (this.warmPool.length > 0) {
+      const candidate = this.warmPool.shift();
+      if (!candidate) break;
+      if (candidate.stopping || candidate.client.isClosed) {
+        void this.destroySandbox(candidate, "evicted dead warm standby");
+        continue;
+      }
+      candidate.conversationId = scope.conversationId;
+      candidate.pendingRequestId = scope.pendingRequestId;
+      candidate.lastActivityAt = this.now();
+      const key = scope.conversationId ?? scope.pendingRequestId ?? "ephemeral";
+      this.options.logger?.info(`Claimed warm microsandbox ${candidate.id} for ${key}`);
+      this.refillWarmPool();
+      return candidate;
+    }
+    return undefined;
+  }
+
+  private refillWarmPool(): void {
+    if (this.closed || this.warmPoolSize <= 0) return;
+    while (this.warmPool.length + this.warmRefills.size < this.warmPoolSize) {
+      const refill = this.spawnSandbox({ warmStandby: true })
+        .then((sandbox) => {
+          if (this.closed) {
+            return this.destroySandbox(sandbox, "provider closed during warm refill");
+          }
+          if (this.warmPool.length >= this.warmPoolSize) {
+            return this.destroySandbox(sandbox, "warm pool already full");
+          }
+          this.warmPool.push(sandbox);
+          return undefined;
+        })
+        .catch((err) => {
+          if (!this.closed) {
+            this.options.logger?.warn(`Warm standby microsandbox refill failed: ${String(err)}`);
+          }
+        })
+        .finally(() => {
+          this.warmRefills.delete(refill);
+        });
+      this.warmRefills.add(refill);
+    }
   }
 
   private startReaper(): void {
@@ -370,13 +454,23 @@ export class MicrosandboxProvider implements ConversationTargetProvider {
     if (sandbox.pendingRequestId && this.pendingMap.get(sandbox.pendingRequestId) === sandbox) {
       this.pendingMap.delete(sandbox.pendingRequestId);
     }
+    const warmIdx = this.warmPool.indexOf(sandbox);
+    if (warmIdx !== -1) {
+      this.warmPool.splice(warmIdx, 1);
+      this.refillWarmPool();
+    }
   }
 
   private async spawnSandbox(scope: {
     conversationId?: string;
     pendingRequestId?: string;
+    warmStandby?: boolean;
   }): Promise<ManagedMicrosandbox> {
-    const key = scope.conversationId ?? scope.pendingRequestId ?? "ephemeral";
+    const t0 = Date.now();
+    const key =
+      scope.conversationId ??
+      scope.pendingRequestId ??
+      (scope.warmStandby ? "warm-standby" : "ephemeral");
     const sandboxName = makeMsbSandboxName(key);
     const capabilityToken = randomBytes(32).toString("hex");
     const hostPort = await this.reserveHostPort();
@@ -431,6 +525,7 @@ export class MicrosandboxProvider implements ConversationTargetProvider {
       this.reservedPorts.delete(hostPort);
       throw err;
     }
+    const tBoot = Date.now();
 
     try {
       const httpUrl = `http://127.0.0.1:${hostPort}`;
@@ -442,6 +537,7 @@ export class MicrosandboxProvider implements ConversationTargetProvider {
         token: capabilityToken,
         fetchImpl: this.options.fetchImpl,
       });
+      const tHealth = Date.now();
 
       const id = `msb-${createdName.slice("letta-msb-".length)}`;
       let sandbox!: ManagedMicrosandbox;
@@ -500,7 +596,10 @@ export class MicrosandboxProvider implements ConversationTargetProvider {
       };
 
       await client.connect();
-      this.options.logger?.info(`Microsandbox ${id} ready at ${wsUrl}`);
+      const tWs = Date.now();
+      this.options.logger?.info(
+        `Microsandbox ${id} ready at ${wsUrl} (boot=${tBoot - t0}ms, health=${tHealth - tBoot}ms, ws=${tWs - tHealth}ms, total=${tWs - t0}ms)`,
+      );
       return sandbox;
     } catch (err) {
       const guestLogs = await this.msb.readSandboxLogs?.(createdName).catch(() => undefined);

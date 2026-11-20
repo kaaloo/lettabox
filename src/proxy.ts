@@ -142,6 +142,7 @@ export class PassthroughProxy {
         guestPort: this.config.sandbox.containerPort,
         memoryLimit: this.config.sandbox.memoryLimit,
         cpuLimit: this.config.sandbox.cpuLimit,
+        warmPoolSize: this.config.sandbox.warmPoolSize,
         lettaApiKey: this.config.lettaApiKey,
         lettaServerUrl: this.config.lettaServerUrl,
         useSecretInjection: this.config.sandbox.msbSecretInjection,
