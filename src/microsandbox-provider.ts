@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { createServer } from "node:net";
 import { DownstreamClient } from "./downstream.ts";
-import { SdkMsbRunner, type MsbRunner } from "./msb-runner.ts";
+import { type MsbRunner, SdkMsbRunner } from "./msb-runner.ts";
 import { parseJsonObject } from "./protocol.ts";
 import { waitForDownstreamHealth } from "./register.ts";
 import type { ConversationTargetProvider, DownstreamTarget } from "./router.ts";
@@ -144,7 +144,8 @@ export class MicrosandboxProvider implements ConversationTargetProvider {
 
   constructor(options: MicrosandboxProviderOptions) {
     this.options = options;
-    this.msb = options.msb ?? new SdkMsbRunner({ msbBin: options.msbBin, msbHome: options.msbHome });
+    this.msb =
+      options.msb ?? new SdkMsbRunner({ msbBin: options.msbBin, msbHome: options.msbHome });
     this.guestPort = options.guestPort ?? 4500;
     this.idleTimeoutMs = options.idleTimeoutMs ?? 30 * 60_000;
     this.reaperIntervalMs =
@@ -322,9 +323,7 @@ export class MicrosandboxProvider implements ConversationTargetProvider {
     this.conversationMap.clear();
     this.pendingMap.clear();
 
-    await Promise.all(
-      allSandboxes.map((sandbox) => this.destroySandbox(sandbox, "shutdown")),
-    );
+    await Promise.all(allSandboxes.map((sandbox) => this.destroySandbox(sandbox, "shutdown")));
   }
 
   private startReaper(): void {

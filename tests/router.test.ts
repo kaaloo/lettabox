@@ -107,12 +107,36 @@ describe("EnvelopeRouter", () => {
     const controlFrames = [
       { type: "list_models", request_id: "r1" },
       { type: "sync", runtime: { agent_id: null, conversation_id: "default" } },
-      { type: "conversation_retrieve", request_id: "r2", conversation_id: "conv-1" },
-      { type: "conversation_update", request_id: "r3", conversation_id: "conv-1" },
-      { type: "conversation_recompile", request_id: "r4", conversation_id: "conv-1" },
-      { type: "conversation_fork", request_id: "r5", conversation_id: "conv-1" },
-      { type: "conversation_messages_list", request_id: "r6", conversation_id: "conv-1" },
-      { type: "conversation_compact", request_id: "r7", conversation_id: "conv-1" },
+      {
+        type: "conversation_retrieve",
+        request_id: "r2",
+        conversation_id: "conv-1",
+      },
+      {
+        type: "conversation_update",
+        request_id: "r3",
+        conversation_id: "conv-1",
+      },
+      {
+        type: "conversation_recompile",
+        request_id: "r4",
+        conversation_id: "conv-1",
+      },
+      {
+        type: "conversation_fork",
+        request_id: "r5",
+        conversation_id: "conv-1",
+      },
+      {
+        type: "conversation_messages_list",
+        request_id: "r6",
+        conversation_id: "conv-1",
+      },
+      {
+        type: "conversation_compact",
+        request_id: "r7",
+        conversation_id: "conv-1",
+      },
       { type: "terminal_spawn", request_id: "r8", terminal_id: "t1" },
       { type: "terminal_input", terminal_id: "t1", data: "ls\n" },
       { type: "terminal_resize", terminal_id: "t1", cols: 80, rows: 24 },
@@ -138,7 +162,11 @@ describe("EnvelopeRouter", () => {
     });
 
     await router.handleUpstreamMessage(
-      JSON.stringify({ type: "runtime_start", request_id: "r1", conversation_id: "conv-a" }),
+      JSON.stringify({
+        type: "runtime_start",
+        request_id: "r1",
+        conversation_id: "conv-a",
+      }),
     );
     await router.handleUpstreamMessage(
       JSON.stringify({
@@ -166,11 +194,18 @@ describe("EnvelopeRouter", () => {
 
     expect(control.sent).toHaveLength(0);
     expect(fake.workers.size).toBe(2);
-    expect(fake.convMap.get("conv-a")!.parsed().map((f) => f.type)).toEqual([
-      "runtime_start",
-      "input",
-    ]);
-    expect(fake.convMap.get("conv-b")!.parsed().map((f) => f.type)).toEqual(["sync", "input"]);
+    expect(
+      fake.convMap
+        .get("conv-a")!
+        .parsed()
+        .map((f) => f.type),
+    ).toEqual(["runtime_start", "input"]);
+    expect(
+      fake.convMap
+        .get("conv-b")!
+        .parsed()
+        .map((f) => f.type),
+    ).toEqual(["sync", "input"]);
   });
 
   test("binds create_conversation runtime_start pending worker on runtime_start_response", async () => {
@@ -266,7 +301,11 @@ describe("EnvelopeRouter", () => {
     );
 
     expect(control.sent).toHaveLength(0);
-    expect(worker.parsed().map((f) => f.type)).toEqual(["input", "control_request" /* not sent */, "control_response"].filter((t) => t !== "control_request"));
+    expect(worker.parsed().map((f) => f.type)).toEqual(
+      ["input", "control_request" /* not sent */, "control_response"].filter(
+        (t) => t !== "control_request",
+      ),
+    );
     expect(worker.parsed()[1]).toEqual({
       type: "control_response",
       request_id: "perm-req-42",
@@ -353,7 +392,10 @@ describe("EnvelopeRouter", () => {
     });
 
     const p1 = router.handleUpstreamMessage(
-      JSON.stringify({ type: "sync", runtime: { agent_id: "a", conversation_id: "conv-cold" } }),
+      JSON.stringify({
+        type: "sync",
+        runtime: { agent_id: "a", conversation_id: "conv-cold" },
+      }),
     );
     const p2 = router.handleUpstreamMessage(
       JSON.stringify({
@@ -372,11 +414,12 @@ describe("EnvelopeRouter", () => {
 
     await Promise.all([p1, p2, p3]);
     expect(fake.workers.size).toBe(1);
-    expect(fake.convMap.get("conv-cold")!.parsed().map((f) => f.type)).toEqual([
-      "sync",
-      "change_device_state",
-      "input",
-    ]);
+    expect(
+      fake.convMap
+        .get("conv-cold")!
+        .parsed()
+        .map((f) => f.type),
+    ).toEqual(["sync", "change_device_state", "input"]);
   });
 
   test("routes non-CRUD frames with top-level conversation_id (e.g. abort_message) to conversation worker", async () => {
@@ -407,9 +450,11 @@ describe("EnvelopeRouter", () => {
 
     expect(control.sent).toHaveLength(0);
     expect(fake.workers.size).toBe(1);
-    expect(fake.convMap.get("conv-int")!.parsed().map((f) => f.type)).toEqual([
-      "input",
-      "abort_message",
-    ]);
+    expect(
+      fake.convMap
+        .get("conv-int")!
+        .parsed()
+        .map((f) => f.type),
+    ).toEqual(["input", "abort_message"]);
   });
 });

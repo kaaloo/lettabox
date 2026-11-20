@@ -1,11 +1,6 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
-import {
-  resolveRuntime,
-  Sandbox,
-  SandboxNotFoundError,
-  type SandboxBuilder,
-} from "microsandbox";
+import { resolveRuntime, Sandbox, type SandboxBuilder, SandboxNotFoundError } from "microsandbox";
 
 export interface MsbRunSpec {
   name: string;

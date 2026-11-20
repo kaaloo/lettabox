@@ -5,12 +5,14 @@
 ## Summary
 
 Today, connecting a self-hosted machine (macOS laptop or Linux VPS) to `chat.letta.com` via `letta server` runs every conversation inside the same host environment. Isolating conversations currently requires either:
+
 - Paying per-hour for Letta Cloud Sandboxes (\$0.24/hr), or
 - Running multiple named `letta server` processes, which floods the `chat.letta.com` environment picker.
 
 **`lettabox`** demonstrates a third model: expose a **single unified remote environment** to `chat.letta.com` while lazily isolating every `conversation_id` inside its own ephemeral **Microsandbox (`msb`) hardware microVM** running an unmodified `ghcr.io/letta-ai/letta-code:latest` image—with **zero modifications to `letta-code`**.
 
 We're sharing this working prototype to ask the Letta team whether this belongs:
+
 - **Upstream in `letta-code`** (e.g., `letta server --sandbox microsandbox`),
 - **Behind a small upstream hook** (keeping the provider external), or
 - **As a standalone community tool** (e.g., paired with `letta-server-macos-menubar`).
@@ -59,7 +61,8 @@ flowchart TB
 ## Live Protocol V2 Observations
 
 During live end-to-end testing against `chat.letta.com`, we observed several behaviors that informed the router:
-- Existing conversations often begin with `sync` → `change_device_state` → `input` directly (without `runtime_start`), so lazy provisioning must trigger on *any* conversation-scoped frame, not only `runtime_start`.
+
+- Existing conversations often begin with `sync` → `change_device_state` → `input` directly (without `runtime_start`), so lazy provisioning must trigger on _any_ conversation-scoped frame, not only `runtime_start`.
 - Initial environment sync sends `sync` with `runtime.conversation_id = "default"`, which must route to the control-plane rather than spawning a sandbox.
 - `GET /app-server-info` returned unexpected keys for `lettaCodeVersion` / `supported_commands` compared to our initial inspection—documenting its stable JSON schema would help external wrappers register full capabilities accurately.
 

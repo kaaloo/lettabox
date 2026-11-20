@@ -1,6 +1,32 @@
+# Secrets and derived credentials - never commit
+.env
+.env.*
+!.env.example
+*.secret
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa*
+id_ed25519*
+*.kubeconfig
+kubeconfig*
+*.tfstate
+*.tfstate.*
+secrets/
+
+# Sensitive local outputs (audit evidence and derived credentials)
+private/
+
+# Dependencies and build outputs
 node_modules/
 dist/
-.env
-.env.local
+build/
+coverage/
 *.log
+
+# Editor and OS noise
 .DS_Store
+.idea/
+.vscode/*.local
+*.swp

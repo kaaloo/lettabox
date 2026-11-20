@@ -17,6 +17,7 @@ letta server --listen ws://0.0.0.0:4500 --ws-auth capability-token --ws-token-fi
 ```
 
 Key properties from `src/websocket/app-server.ts`:
+
 - Default WebSocket path is `/ws` (also accepts `/`).
 - Accepted sockets are attached directly via `attachOpenListenerSocket(...)`—the exact same `ListenerRuntime` and Protocol V2 handler used by remote Cloud relay mode.
 - Exposes HTTP endpoints:
@@ -32,12 +33,14 @@ Key properties from `src/websocket/app-server.ts`:
 ## 2. Upstream Cloud Registration & Handshake
 
 ### Step A: HTTP Registration (`src/websocket/listen-register.ts`)
+
 - **Endpoint:** `POST ${LETTA_SERVER_URL}/v1/environments/register` (default `https://api.letta.com`)
 - **Headers:**
   - `Content-Type: application/json`
   - `Authorization: Bearer <LETTA_API_KEY>`
   - `X-Letta-Source: letta-code`
 - **Request Body:**
+
   ```json
   {
     "deviceId": "<stable-device-uuid>",
@@ -57,6 +60,7 @@ Key properties from `src/websocket/app-server.ts`:
   }
   ```
 - **Response:**
+
   ```json
   {
     "connectionId": "...",
@@ -67,6 +71,7 @@ Key properties from `src/websocket/app-server.ts`:
   ```
 
 ### Step B: WebSocket Upgrade & Split Channels (`src/websocket/listener/lifecycle.ts`, `split-stream-lifecycle.ts`)
+
 - **Upgrade header:** `Authorization: Bearer <LETTA_API_KEY>`
 - **Query params:**
   - `deviceId=<deviceId>`
@@ -77,6 +82,7 @@ Key properties from `src/websocket/app-server.ts`:
   - If `supportsPairedListenerGenerations === true` (and split channels enabled):
     - Both sockets also set `connectionGeneration=<uuid>` and `connectionAttempt=<monotonic-int>`
     - Open `control` socket first, wait for server frame:
+
       ```json
       {
         "type": "listener_ready",
@@ -88,7 +94,9 @@ Key properties from `src/websocket/app-server.ts`:
     - If either socket closes, tear down the pair and reconnect cleanly.
 
 ### Outbound Channel Routing (`src/websocket/listener/protocol-outbound-routing.ts`)
+
 When split channels are active, exactly **5 outbound message types** go on the `stream` socket:
+
 - `stream_delta`
 - `update_device_status`
 - `update_loop_status`
@@ -98,6 +106,7 @@ When split channels are active, exactly **5 outbound message types** go on the `
 All other outbound frames (`input_accepted`, `*_response`, `control_request`, etc.) go on the `control` socket.
 
 ### Step C: Upstream Heartbeat & Re-Registration (`src/websocket/listener/heartbeat.ts`, `constants.ts`)
+
 - Send app-level JSON `{"type":"ping"}` every **30s** on `control` (and `stream` if open).
 - Relay replies with `{"type":"pong"}`—handle and swallow at the multiplexer layer (do not forward downstream).
 - Cloud marks environments offline after ~120s of silence; terminate and reconnect after 3 missed pongs (**90s**).
@@ -109,7 +118,9 @@ All other outbound frames (`input_accepted`, `*_response`, `control_request`, et
 ## 3. Envelope Routing & Edge Cases (`src/types/protocol_v2.ts`, `runtime-start-protocol.ts`)
 
 ### Standard Conversation-Scoped Frames
+
 Carry `runtime`:
+
 ```ts
 interface RuntimeScope {
   agent_id: string | null;
@@ -120,6 +131,7 @@ interface RuntimeScope {
 Examples: `input`, `abort_message`, `sync`, `change_device_state`, `update_model`, `update_toolset`, `turn_finished_ack`.
 
 ### Edge Case 1: `runtime_start`
+
 - Carries `conversation_id` at the **top level** (`frame.conversation_id`), NOT inside `frame.runtime`.
 - May omit `conversation_id` and pass `create_conversation` instead! In that case, `conversation_id` is only known when `runtime_start_response` returns with `response.runtime.conversation_id`.
 - **Routing rule:**
@@ -127,7 +139,9 @@ Examples: `input`, `abort_message`, `sync`, `change_device_state`, `update_model
   - If `frame.create_conversation` is present → allocate a fresh sandbox container, associate it with `frame.request_id`, forward `runtime_start`, and index the container under `response.runtime.conversation_id` when `runtime_start_response` arrives (ensuring `cwd`, git context, and initial `update_device_status` reflect the sandbox, not the control-plane).
 
 ### Edge Case 2: Stateless Conversation CRUD Commands
+
 These carry a top-level `conversation_id` but are pure Letta Cloud API proxies:
+
 - `conversation_retrieve`
 - `conversation_update`
 - `conversation_recompile`
@@ -138,6 +152,7 @@ These carry a top-level `conversation_id` but are pure Letta Cloud API proxies:
 Routing these to the **control-plane** avoids cold-starting sandbox containers just to browse history in `chat.letta.com`.
 
 ### Edge Case 3: Interactive PTY Terminals
+
 `terminal_spawn`, `terminal_input`, `terminal_resize`, `terminal_kill` carry `terminal_id` (no `conversation_id`). For the POC, route these to the control-plane (or track `terminal_id -> target` if scoped later).
 
 ---
@@ -146,6 +161,7 @@ Routing these to the **control-plane** avoids cold-starting sandbox containers j
 
 - **Input ACK (`src/websocket/listener/input-ack.ts`):**
   Inbound `input` frames are acknowledged by downstream with:
+
   ```json
   {
     "type": "input_accepted",
@@ -155,9 +171,11 @@ Routing these to the **control-plane** avoids cold-starting sandbox containers j
     "disposition": "started"
   }
   ```
+
   Forward opaquely on the upstream `control` socket.
 - **Sequence numbering (`RuntimeEnvelope`):**
   Every protocol event emitted by a downstream server includes:
+
   ```ts
   {
     runtime: ConversationRuntimeScope;
@@ -166,4 +184,5 @@ Routing these to the **control-plane** avoids cold-starting sandbox containers j
     idempotency_key: string; // `${type}:${eventSeq}:${uuid}`
   }
   ```
+
   The multiplexer maintains one strictly monotonic counter (`1, 2, 3, ...`) per upstream connection and rewrites `frame.event_seq` on any outbound JSON frame where `typeof frame.event_seq === "number"`. `idempotency_key` already embeds a UUID and does not require rewriting.

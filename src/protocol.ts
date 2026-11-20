@@ -74,9 +74,7 @@ export function decodeWsData(data: unknown): string | null {
     return new TextDecoder().decode(data);
   }
   if (ArrayBuffer.isView(data)) {
-    return new TextDecoder().decode(
-      new Uint8Array(data.buffer, data.byteOffset, data.byteLength),
-    );
+    return new TextDecoder().decode(new Uint8Array(data.buffer, data.byteOffset, data.byteLength));
   }
   return null;
 }

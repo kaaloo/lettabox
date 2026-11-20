@@ -10,8 +10,8 @@ import {
 } from "../src/config.ts";
 import {
   parseJsonObject,
-  selectUpstreamChannel,
   STREAM_CHANNEL_MESSAGE_TYPES,
+  selectUpstreamChannel,
   summarizeFrame,
 } from "../src/protocol.ts";
 import { buildUpstreamWsUrl } from "../src/upstream.ts";

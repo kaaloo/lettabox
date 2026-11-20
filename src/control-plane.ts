@@ -17,10 +17,7 @@ export interface RunningControlPlane {
   stop(): Promise<void>;
 }
 
-function drainStream(
-  stream: ReadableStream<Uint8Array>,
-  onChunk: (text: string) => void,
-): void {
+function drainStream(stream: ReadableStream<Uint8Array>, onChunk: (text: string) => void): void {
   void (async () => {
     const reader = stream.getReader();
     const decoder = new TextDecoder();

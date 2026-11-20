@@ -1,0 +1,19 @@
+minimumReleaseAge: 10080
+minimumReleaseAgeStrict: true
+minimumReleaseAgeIgnoreMissingTime: false
+# Owner-approved 2026-11-20: the SDK migration on main requires this release.
+# Revisit 2026-11-25 and remove once the normal cooldown admits it.
+minimumReleaseAgeExclude:
+  - microsandbox@0.7.16
+  - "@microsandbox/types@0.7.16"
+  - "@superradcompany/microsandbox-darwin-arm64@0.7.16"
+  - "@superradcompany/microsandbox-linux-arm64-gnu@0.7.16"
+  - "@superradcompany/microsandbox-linux-x64-gnu@0.7.16"
+  - "@superradcompany/microsandbox-win32-arm64-msvc@0.7.16"
+  - "@superradcompany/microsandbox-win32-x64-msvc@0.7.16"
+trustLockfile: false
+blockExoticSubdeps: true
+# Required by cve-lite-cli for its local advisory database.
+allowBuilds:
+  better-sqlite3: true
+saveExact: true

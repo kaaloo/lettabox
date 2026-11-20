@@ -1,6 +1,6 @@
 import type { Server } from "bun";
-import type { ActiveSandboxInfo } from "./microsandbox-provider.ts";
 import type { SandboxMode } from "./config.ts";
+import type { ActiveSandboxInfo } from "./microsandbox-provider.ts";
 
 export interface StatusSnapshot {
   name: "lettabox";

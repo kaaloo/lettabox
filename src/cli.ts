@@ -3,7 +3,7 @@ import pkg from "../package.json";
 import { loadConfig } from "./config.ts";
 import { type RunningControlPlane, spawnManagedControlPlane } from "./control-plane.ts";
 import { type Logger, MultiplexerProxy } from "./proxy.ts";
-import { startStatusServer, type StatusServer } from "./status-server.ts";
+import { type StatusServer, startStatusServer } from "./status-server.ts";
 
 export type LifecycleState =
   | "starting"

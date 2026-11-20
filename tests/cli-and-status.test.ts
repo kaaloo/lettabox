@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { createLifecycleEmitter, parseCliArgs, runCli } from "../src/cli.ts";
 import { loadConfig, readApiKeyFromLettaSettings } from "../src/config.ts";
 import { spawnManagedControlPlane } from "../src/control-plane.ts";
-import { startStatusServer, type StatusServer } from "../src/status-server.ts";
+import { type StatusServer, startStatusServer } from "../src/status-server.ts";
 
 const tempDirs: string[] = [];
 const servers: StatusServer[] = [];
@@ -246,7 +246,9 @@ describe("StatusServer", () => {
   test("spawnManagedControlPlane invokes onUnexpectedExit when child crashes, not on stop()", async () => {
     const dir = makeTempDir();
     const crashingBin = join(dir, "crash-letta.sh");
-    writeFileSync(crashingBin, "#!/usr/bin/env bash\nexit 42\n", { mode: 0o755 });
+    writeFileSync(crashingBin, "#!/usr/bin/env bash\nexit 42\n", {
+      mode: 0o755,
+    });
 
     const crashCodes: number[] = [];
     const cp = await spawnManagedControlPlane({
@@ -267,7 +269,9 @@ describe("StatusServer", () => {
 
     // Intentional stop must NOT trigger onUnexpectedExit
     const sleepingBin = join(dir, "sleep-letta.sh");
-    writeFileSync(sleepingBin, "#!/usr/bin/env bash\nsleep 30\n", { mode: 0o755 });
+    writeFileSync(sleepingBin, "#!/usr/bin/env bash\nsleep 30\n", {
+      mode: 0o755,
+    });
     const cleanCodes: number[] = [];
     const cp2 = await spawnManagedControlPlane({
       lettaBin: sleepingBin,
