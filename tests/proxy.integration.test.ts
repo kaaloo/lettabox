@@ -115,8 +115,10 @@ function createMockRelay(options: {
   let autoPong = options.autoPong ?? true;
   const autoListenerReady = options.autoListenerReady ?? true;
 
-  const registrations: Array<{ headers: Record<string, string>; body: Record<string, unknown> }> =
-    [];
+  const registrations: Array<{
+    headers: Record<string, string>;
+    body: Record<string, unknown>;
+  }> = [];
   const controlMessages: string[] = [];
   const streamMessages: string[] = [];
   const connections: Array<{
@@ -307,13 +309,18 @@ afterEach(() => {
 
 describe("PassthroughProxy integration", () => {
   test("paired-generation handshake, opaque passthrough, and split-channel routing", async () => {
-    const downstream = createMockDownstream({ expectedToken: "secret-cap-token" });
+    const downstream = createMockDownstream({
+      expectedToken: "secret-cap-token",
+    });
     const relay = createMockRelay({
       expectedApiKey: "test-api-key",
       supportsSplitStatusChannels: true,
       supportsPairedListenerGenerations: true,
     });
-    cleanups.push(() => downstream.stop(), () => relay.stop());
+    cleanups.push(
+      () => downstream.stop(),
+      () => relay.stop(),
+    );
 
     let readyCount = 0;
     const proxy = new PassthroughProxy({
@@ -359,7 +366,11 @@ describe("PassthroughProxy integration", () => {
         runtime: { agent_id: "a1", conversation_id: "c1" },
         text: "hello",
       },
-      { type: "brand_new_future_cmd", request_id: "r3", custom_field: { nested: true } },
+      {
+        type: "brand_new_future_cmd",
+        request_id: "r3",
+        custom_field: { nested: true },
+      },
     ];
     for (const f of inboundFrames) {
       relay.sendOnControl(f);
@@ -370,7 +381,11 @@ describe("PassthroughProxy integration", () => {
     // Downstream -> Upstream split-channel routing
     const controlExpected = [
       { type: "input_accepted", request_id: "r2", accepted: true },
-      { type: "runtime_start_response", request_id: "r1", runtime: { conversation_id: "c1" } },
+      {
+        type: "runtime_start_response",
+        request_id: "r1",
+        runtime: { conversation_id: "c1" },
+      },
       { type: "unknown_future_response", request_id: "r3", ok: true },
     ];
     const streamExpected = [
@@ -401,7 +416,10 @@ describe("PassthroughProxy integration", () => {
       expectedApiKey: "test-api-key",
       autoPong: true,
     });
-    cleanups.push(() => downstream.stop(), () => relay.stop());
+    cleanups.push(
+      () => downstream.stop(),
+      () => relay.stop(),
+    );
 
     let readyCount = 0;
     const proxy = new PassthroughProxy({
@@ -434,7 +452,10 @@ describe("PassthroughProxy integration", () => {
   test("close 1008 'Environment not found' triggers re-registration", async () => {
     const downstream = createMockDownstream();
     const relay = createMockRelay({ expectedApiKey: "test-api-key" });
-    cleanups.push(() => downstream.stop(), () => relay.stop());
+    cleanups.push(
+      () => downstream.stop(),
+      () => relay.stop(),
+    );
 
     let readyCount = 0;
     let disconnectCount = 0;
@@ -464,7 +485,10 @@ describe("PassthroughProxy integration", () => {
   test("close 1000 'Replaced by new connection' is terminal and does not reconnect", async () => {
     const downstream = createMockDownstream();
     const relay = createMockRelay({ expectedApiKey: "test-api-key" });
-    cleanups.push(() => downstream.stop(), () => relay.stop());
+    cleanups.push(
+      () => downstream.stop(),
+      () => relay.stop(),
+    );
 
     let readyCount = 0;
     const terminalReasons: string[] = [];
@@ -500,7 +524,10 @@ describe("PassthroughProxy integration", () => {
       supportsSplitStatusChannels: false,
       supportsPairedListenerGenerations: false,
     });
-    cleanups.push(() => downstream.stop(), () => relay.stop());
+    cleanups.push(
+      () => downstream.stop(),
+      () => relay.stop(),
+    );
 
     let readyCount = 0;
     const proxy = new PassthroughProxy({
@@ -518,7 +545,11 @@ describe("PassthroughProxy integration", () => {
     expect(relay.connections).toHaveLength(1);
     expect(relay.connections[0]!.channel).toBeNull();
 
-    downstream.sendToProxy({ type: "stream_delta", event_seq: 1, delta: "single-socket" });
+    downstream.sendToProxy({
+      type: "stream_delta",
+      event_seq: 1,
+      delta: "single-socket",
+    });
     await waitFor(() => relay.controlMessages.length === 1);
     expect(JSON.parse(relay.controlMessages[0]!)).toEqual({
       type: "stream_delta",
@@ -623,13 +654,19 @@ describe("PassthroughProxy integration", () => {
     expect(worker2.received).toHaveLength(2);
 
     // 4. Interleaved local event_seq (1, 1, 1, 2) from all 3 servers -> monotonic (1, 2, 3, 4) upstream
-    controlPlane.sendToProxy({ type: "update_device_status", event_seq: 1, src: "cp" });
+    controlPlane.sendToProxy({
+      type: "update_device_status",
+      event_seq: 1,
+      src: "cp",
+    });
     worker1.sendToProxy({ type: "stream_delta", event_seq: 1, src: "w1" });
     worker2.sendToProxy({ type: "stream_delta", event_seq: 1, src: "w2" });
     worker1.sendToProxy({ type: "stream_delta", event_seq: 2, src: "w1-2" });
 
     await waitFor(() => relay.streamMessages.length === 4);
-    const seqs = relay.streamMessages.map((s) => (JSON.parse(s) as { event_seq: number }).event_seq);
+    const seqs = relay.streamMessages.map(
+      (s) => (JSON.parse(s) as { event_seq: number }).event_seq,
+    );
     expect(seqs).toEqual([1, 2, 3, 4]);
   });
 });

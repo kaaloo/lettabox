@@ -97,9 +97,7 @@ function parseSandboxMode(value: string | undefined): SandboxMode {
   if (normalized === "microsandbox" || normalized === "msb") {
     return "microsandbox";
   }
-  throw new Error(
-    `Invalid SANDBOX_MODE: ${value} (expected "static" or "microsandbox"/"msb")`,
-  );
+  throw new Error(`Invalid SANDBOX_MODE: ${value} (expected "static" or "microsandbox"/"msb")`);
 }
 
 export function readApiKeyFromLettaSettings(
@@ -130,7 +128,8 @@ export function readApiKeyFromLettaSettings(
 }
 
 export function loadConfig(env: Record<string, string | undefined> = process.env): ProxyConfig {
-  const settingsFile = env.LETTA_SETTINGS_FILE?.trim() || join(homedir(), ".letta", "settings.json");
+  const settingsFile =
+    env.LETTA_SETTINGS_FILE?.trim() || join(homedir(), ".letta", "settings.json");
   const lettaApiKey = env.LETTA_API_KEY?.trim() || readApiKeyFromLettaSettings(settingsFile);
   if (!lettaApiKey) {
     throw new Error(

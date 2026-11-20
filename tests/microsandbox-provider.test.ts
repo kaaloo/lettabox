@@ -330,7 +330,10 @@ describe("MicrosandboxProvider lifecycle", () => {
         const url = new URL(req.url);
         if (url.pathname === "/healthz") return new Response("ok");
         if (url.pathname === "/app-server-info") {
-          return Response.json({ lettaCodeVersion: "0.99.0", supported_commands: ["input"] });
+          return Response.json({
+            lettaCodeVersion: "0.99.0",
+            supported_commands: ["input"],
+          });
         }
         if (url.pathname === "/ws" && srv.upgrade(req)) return undefined;
         return new Response("not found", { status: 404 });
@@ -355,7 +358,9 @@ describe("MicrosandboxProvider lifecycle", () => {
           });
         }
         if (url.pathname === "/relay") {
-          const ok = srv.upgrade(req, { data: { channel: url.searchParams.get("channel") } });
+          const ok = srv.upgrade(req, {
+            data: { channel: url.searchParams.get("channel") },
+          });
           if (ok) return undefined;
         }
         return new Response("not found", { status: 404 });

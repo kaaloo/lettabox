@@ -1,0 +1,51 @@
+name: release-please
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-please-main
+  # A later queued run repairs the release PR after an earlier run. Cancelling
+  # between the API update and signing could strand an unsigned release head.
+  cancel-in-progress: false
+
+jobs:
+  release-please:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The PAT lets checkout push the signed release branch and makes the
+          # resulting pull_request checks run without manual approval.
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+          fetch-depth: 0
+      - name: Check that this run still targets current main
+        id: current-main
+        run: |
+          set -euo pipefail
+          git fetch origin "+refs/heads/main:refs/remotes/origin/main"
+          if [[ "$(git rev-parse origin/main)" == "$GITHUB_SHA" ]]; then
+            echo "current=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Skipping stale run: main is $(git rev-parse origin/main), this run targets $GITHUB_SHA"
+            echo "current=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Maintain the release PR
+        if: steps.current-main.outputs.current == 'true'
+        id: release
+        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        with:
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+      - name: Sign the release PR commit
+        if: steps.release.outputs.prs_created == 'true'
+        env:
+          GIT_SIGNING_KEY: ${{ secrets.GIT_SIGNING_KEY }}
+          PRS: ${{ steps.release.outputs.prs }}
+        run: bash .github/scripts/sign-release-pr-commits.sh

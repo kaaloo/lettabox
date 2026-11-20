@@ -220,9 +220,7 @@ export class PassthroughProxy {
         this.onUpstreamReady?.();
       },
       onDisconnect: ({ code, reason, channel }) => {
-        this.logger.warn(
-          `Upstream ${channel} closed (${code}: ${reason || "no reason"})`,
-        );
+        this.logger.warn(`Upstream ${channel} closed (${code}: ${reason || "no reason"})`);
         this.onUpstreamDisconnect?.();
       },
       onTerminalClose: (reason) => {

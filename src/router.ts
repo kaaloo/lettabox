@@ -1,8 +1,8 @@
 import {
   DEFAULT_CONVERSATION_ID,
   extractRoutingEnvelope,
-  parseJsonObject,
   PTY_COMMAND_TYPES,
+  parseJsonObject,
   rewriteEventSeq,
   STATELESS_CONVERSATION_CRUD_TYPES,
   summarizeFrame,
@@ -86,9 +86,7 @@ export class EnvelopeRouter {
 
     const queueKey = this.computeOrderKey(env);
     const prev = this.orderedQueues.get(queueKey) ?? Promise.resolve();
-    const next = prev
-      .catch(() => {})
-      .then(() => this.dispatchUpstream(raw, frame, env, channel));
+    const next = prev.catch(() => {}).then(() => this.dispatchUpstream(raw, frame, env, channel));
 
     this.orderedQueues.set(queueKey, next);
     void next.finally(() => {
@@ -179,9 +177,7 @@ export class EnvelopeRouter {
       target = resolved.target;
       isCreateConversation = resolved.isCreateConversation;
     } catch (err) {
-      this.logger?.error(
-        `Failed to resolve target for ${summarizeFrame(frame)}: ${String(err)}`,
-      );
+      this.logger?.error(`Failed to resolve target for ${summarizeFrame(frame)}: ${String(err)}`);
       return;
     }
 
