@@ -74,6 +74,25 @@ DEBUG_FRAMES=1 \
 bun run start
 ```
 
+## Running in Microsandbox (`msb`) Mode
+
+Uses hardware-isolated microVMs via the `msb` CLI (works on macOS Apple Silicon and Linux with KVM). When `LETTA_SERVER_URL` is HTTPS (the default `https://api.letta.com`), the provider automatically uses `msb`'s host-side secret injection (`--secret LETTA_API_KEY:headers=[Authorization]@api.letta.com`) so the real `LETTA_API_KEY` stays on the host and never enters the microVM.
+
+```zsh
+# Control-plane
+letta server --listen ws://127.0.0.1:4500
+
+# Multiplexer with Microsandbox microVMs
+LETTA_API_KEY="sk-let-..." \
+LETTA_CONNECTION_NAME="letta-sandbox" \
+CONTROL_PLANE_URL="ws://127.0.0.1:4500/ws" \
+SANDBOX_MODE="msb" \
+SANDBOX_IMAGE="<your-oci-image-with-letta-code>" \
+SANDBOX_IDLE_TIMEOUT_MS="900000" \
+DEBUG_FRAMES=1 \
+bun run start
+```
+
 ### Environment Variables
 
 | Variable | Default | Description |
@@ -83,12 +102,14 @@ bun run start
 | `LETTA_CONNECTION_NAME` | `letta-sandbox-<hostname>` | Display name shown in `chat.letta.com` |
 | `LETTA_DEVICE_ID` | persisted in `~/.letta-sandbox/device-id` | Stable UUID for this remote environment |
 | `CONTROL_PLANE_URL` / `DOWNSTREAM_URL` | `ws://127.0.0.1:4500/ws` | Control-plane `letta server --listen` WebSocket URL |
-| `SANDBOX_MODE` | `static` | `static` (uses `WORKER_URLS`) or `docker` (lazy container per `conversation_id`) |
+| `SANDBOX_MODE` | `static` | `static` (`WORKER_URLS`), `docker` (gVisor/Docker), or `microsandbox` / `msb` (`msb` microVMs) |
 | `WORKER_URLS` | *(empty — falls back to control-plane)* | Comma-separated worker URLs when `SANDBOX_MODE=static` |
-| `SANDBOX_IMAGE` | `letta-sandbox-worker:latest` | Docker image for ephemeral conversation sandboxes |
-| `SANDBOX_RUNTIME` | `runsc` | OCI runtime (`runsc` for gVisor; set `""` for default Docker runtime) |
+| `SANDBOX_IMAGE` | `letta-sandbox-worker:latest` | OCI image for ephemeral conversation sandboxes |
+| `SANDBOX_RUNTIME` | `runsc` | Docker OCI runtime (`runsc` for gVisor; set `""` for default Docker runtime) |
+| `MSB_PATH` | `msb` | Path to the `msb` binary when `SANDBOX_MODE=microsandbox` / `msb` |
+| `MSB_SECRET_INJECTION` | `true` | Use host-side `--secret` injection for `LETTA_API_KEY` on HTTPS Letta servers |
 | `SANDBOX_IDLE_TIMEOUT_MS` | `900000` (15m) | Idle duration before a conversation sandbox is reaped |
-| `SANDBOX_MEMORY_LIMIT` / `SANDBOX_CPU_LIMIT` / `SANDBOX_PIDS_LIMIT` | `1g` / `1` / `256` | Per-container resource limits |
+| `SANDBOX_MEMORY_LIMIT` / `SANDBOX_CPU_LIMIT` / `SANDBOX_PIDS_LIMIT` | `1g` / `1` / `256` | Per-sandbox resource limits |
 | `DOWNSTREAM_WS_TOKEN` / `DOWNSTREAM_WS_TOKEN_FILE` | *(optional)* | Capability token when using `--ws-auth capability-token` |
 | `WORKER_WS_TOKEN` / `WORKER_WS_TOKEN_FILE` | *(falls back to `DOWNSTREAM_WS_TOKEN`)* | Capability token for static worker instances |
 | `DEBUG_FRAMES` | `false` | Set `1` or `true` to log routed frame envelope summaries & `event_seq` rewrites |

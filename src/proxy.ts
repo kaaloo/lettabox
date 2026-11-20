@@ -2,6 +2,8 @@ import type { ProxyConfig } from "./config.ts";
 import type { DockerRunner } from "./docker-runner.ts";
 import { DownstreamClient } from "./downstream.ts";
 import { DockerGvisorProvider } from "./gvisor-provider.ts";
+import { MicrosandboxProvider } from "./microsandbox-provider.ts";
+import type { MsbRunner } from "./msb-runner.ts";
 import { fetchAppServerInfo, waitForDownstreamHealth } from "./register.ts";
 import {
   type ConversationTargetProvider,
@@ -30,6 +32,8 @@ export interface PassthroughProxyOptions {
   logger?: Logger;
   fetchImpl?: typeof fetch;
   docker?: DockerRunner;
+  msb?: MsbRunner;
+  allocatePort?: () => Promise<number>;
   onTerminalClose?: (reason: string) => void;
   onUpstreamReady?: () => void;
 }
@@ -39,12 +43,14 @@ export class PassthroughProxy {
   private readonly logger: Logger;
   private readonly fetchImpl?: typeof fetch;
   private readonly docker?: DockerRunner;
+  private readonly msb?: MsbRunner;
+  private readonly allocatePort?: () => Promise<number>;
   private readonly onTerminalClose?: (reason: string) => void;
   private readonly onUpstreamReady?: () => void;
 
   private controlPlane: DownstreamClient | null = null;
   private conversationProvider: ConversationTargetProvider | null = null;
-  private gvisorProvider: DockerGvisorProvider | null = null;
+  private asyncCloseProvider: (() => Promise<void>) | null = null;
   private router: EnvelopeRouter | null = null;
   private upstream: UpstreamRelayClient | null = null;
   private stopped = false;
@@ -54,6 +60,8 @@ export class PassthroughProxy {
     this.logger = options.logger ?? defaultLogger;
     this.fetchImpl = options.fetchImpl;
     this.docker = options.docker;
+    this.msb = options.msb;
+    this.allocatePort = options.allocatePort;
     this.onTerminalClose = options.onTerminalClose;
     this.onUpstreamReady = options.onUpstreamReady;
   }
@@ -80,7 +88,9 @@ export class PassthroughProxy {
     const modeDesc =
       this.config.sandboxMode === "docker"
         ? `docker sandbox mode (image=${this.config.sandbox.image}, runtime=${this.config.sandbox.runtime || "default"})`
-        : `${this.config.workerWsUrls.length} configured worker(s)`;
+        : this.config.sandboxMode === "microsandbox"
+          ? `microsandbox mode (image=${this.config.sandbox.image}, secretProxy=${this.config.sandbox.msbSecretInjection ?? true})`
+          : `${this.config.workerWsUrls.length} configured worker(s)`;
     this.logger.info(
       `Control-plane ready (letta-code ${version}, ${cmdCount} supported_commands, ${modeDesc})`,
     );
@@ -143,8 +153,33 @@ export class PassthroughProxy {
           this.router?.handleDownstreamMessage(target, raw);
         },
       });
-      this.gvisorProvider = gvisor;
+      this.asyncCloseProvider = () => gvisor.closeAllAsync();
       provider = gvisor;
+    } else if (this.config.sandboxMode === "microsandbox") {
+      const msbProvider = new MicrosandboxProvider({
+        image: this.config.sandbox.image,
+        msbBin: this.config.sandbox.msbBin,
+        guestPort: this.config.sandbox.containerPort,
+        memoryLimit: this.config.sandbox.memoryLimit,
+        cpuLimit: this.config.sandbox.cpuLimit,
+        lettaApiKey: this.config.lettaApiKey,
+        lettaServerUrl: this.config.lettaServerUrl,
+        useSecretInjection: this.config.sandbox.msbSecretInjection,
+        idleTimeoutMs: this.config.sandbox.idleTimeoutMs,
+        reaperIntervalMs: this.config.sandbox.reaperIntervalMs,
+        startTimeoutMs: this.config.sandbox.startTimeoutMs,
+        reconnectBaseDelayMs: this.config.reconnectBaseDelayMs,
+        reconnectMaxDelayMs: this.config.reconnectMaxDelayMs,
+        msb: this.msb,
+        allocatePort: this.allocatePort,
+        fetchImpl: this.fetchImpl,
+        logger: this.logger,
+        onMessage: (target, raw) => {
+          this.router?.handleDownstreamMessage(target, raw);
+        },
+      });
+      this.asyncCloseProvider = () => msbProvider.closeAllAsync();
+      provider = msbProvider;
     } else {
       provider = new StaticWorkerPool({
         workerUrls: this.config.workerWsUrls,
@@ -165,6 +200,7 @@ export class PassthroughProxy {
           this.logger.error(`${workerId} error: ${String(err)}`);
         },
       });
+      this.asyncCloseProvider = null;
     }
     this.conversationProvider = provider;
 
@@ -227,9 +263,9 @@ export class PassthroughProxy {
     this.stopped = true;
     this.upstream?.close();
     this.upstream = null;
-    if (this.gvisorProvider) {
-      await this.gvisorProvider.closeAllAsync();
-      this.gvisorProvider = null;
+    if (this.asyncCloseProvider) {
+      await this.asyncCloseProvider();
+      this.asyncCloseProvider = null;
     } else {
       this.conversationProvider?.closeAll();
     }

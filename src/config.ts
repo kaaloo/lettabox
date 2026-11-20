@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir, hostname } from "node:os";
 import { dirname, join } from "node:path";
 
-export type SandboxMode = "static" | "docker";
+export type SandboxMode = "static" | "docker" | "microsandbox";
 
 export interface SandboxConfig {
   image: string;
@@ -16,6 +16,8 @@ export interface SandboxConfig {
   cpuLimit: string;
   pidsLimit: number;
   network?: string;
+  msbBin?: string;
+  msbSecretInjection?: boolean;
 }
 
 export interface ProxyConfig {
@@ -90,13 +92,19 @@ function parseUrlList(value: string | undefined): string[] {
 }
 
 function parseSandboxMode(value: string | undefined): SandboxMode {
-  if (!value || value.trim() === "" || value.trim() === "static") {
+  const normalized = value?.trim().toLowerCase();
+  if (!normalized || normalized === "static") {
     return "static";
   }
-  if (value.trim() === "docker") {
+  if (normalized === "docker") {
     return "docker";
   }
-  throw new Error(`Invalid SANDBOX_MODE: ${value} (expected "static" or "docker")`);
+  if (normalized === "microsandbox" || normalized === "msb") {
+    return "microsandbox";
+  }
+  throw new Error(
+    `Invalid SANDBOX_MODE: ${value} (expected "static", "docker", or "microsandbox"/"msb")`,
+  );
 }
 
 export function loadConfig(env: Record<string, string | undefined> = process.env): ProxyConfig {
@@ -138,6 +146,8 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
   const runtimeRaw = env.SANDBOX_RUNTIME;
   const runtime =
     runtimeRaw === undefined ? "runsc" : runtimeRaw.trim().length > 0 ? runtimeRaw.trim() : undefined;
+  const msbSecretInjection =
+    env.MSB_SECRET_INJECTION !== "0" && env.MSB_SECRET_INJECTION !== "false";
 
   return {
     lettaApiKey,
@@ -172,6 +182,8 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
       cpuLimit: env.SANDBOX_CPU_LIMIT?.trim() || "1",
       pidsLimit: parsePositiveInt(env.SANDBOX_PIDS_LIMIT, 256, "SANDBOX_PIDS_LIMIT"),
       network: env.SANDBOX_NETWORK?.trim() || undefined,
+      msbBin: env.MSB_PATH?.trim() || undefined,
+      msbSecretInjection,
     },
     workerWsUrls,
     workerWsToken: workerWsToken || undefined,
