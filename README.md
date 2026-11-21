@@ -14,12 +14,10 @@ Works on **macOS (Apple Silicon)** and **Linux (KVM)** using the official multi-
 Install globally from GitHub with Bun (includes both the bundled Letta CLI and Microsandbox runtime—no separate `letta` or `msb` install required):
 
 ```sh
-# Latest release
-bun install -g github:kaaloo/lettabox#v0.2.0
-
-# Or latest main
 bun install -g github:kaaloo/lettabox
 ```
+
+To pin a specific version, append `#<tag>` using any tag from [Releases](https://github.com/kaaloo/lettabox/releases).
 
 Or install from a local clone for development:
 
