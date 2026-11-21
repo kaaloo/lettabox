@@ -8,7 +8,7 @@ import {
   type RegistrationResponse,
   selectUpstreamChannel,
 } from "./protocol.ts";
-import { registerEnvironment } from "./register.ts";
+import { RegistrationAuthError, registerEnvironment } from "./register.ts";
 
 export const TERMINAL_REPLACED_CODE = 1000;
 export const TERMINAL_REPLACED_REASON = "Replaced by new connection";
@@ -37,7 +37,7 @@ export interface UpstreamRelayClientOptions {
     attempt: number;
   }) => void;
   onDisconnect?: (info: { code: number; reason: string; channel: "control" | "stream" }) => void;
-  onTerminalClose?: (reason: string) => void;
+  onTerminalClose?: (reason: string, isError?: boolean) => void;
   onError?: (err: unknown) => void;
 }
 
@@ -216,6 +216,13 @@ export class UpstreamRelayClient {
     } catch (err) {
       if (this.closed || currentSession !== this.sessionToken) return;
       this.options.onError?.(err);
+      if (err instanceof RegistrationAuthError) {
+        this.closed = true;
+        this.clearTimers();
+        this.teardownSockets(1000, "Authentication failed");
+        this.options.onTerminalClose?.(err.message, true);
+        return;
+      }
       this.scheduleReconnect();
       return;
     }

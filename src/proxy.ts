@@ -31,7 +31,7 @@ export interface PassthroughProxyOptions {
   fetchImpl?: typeof fetch;
   msb?: MsbRunner;
   allocatePort?: () => Promise<number>;
-  onTerminalClose?: (reason: string) => void;
+  onTerminalClose?: (reason: string, isError?: boolean) => void;
   onUpstreamReady?: () => void;
   onUpstreamDisconnect?: () => void;
   onWorkingChange?: (working: boolean) => void;
@@ -43,7 +43,7 @@ export class PassthroughProxy {
   private readonly fetchImpl?: typeof fetch;
   private readonly msb?: MsbRunner;
   private readonly allocatePort?: () => Promise<number>;
-  private readonly onTerminalClose?: (reason: string) => void;
+  private readonly onTerminalClose?: (reason: string, isError?: boolean) => void;
   private readonly onUpstreamReady?: () => void;
   private readonly onUpstreamDisconnect?: () => void;
   private readonly onWorkingChange?: (working: boolean) => void;
@@ -226,10 +226,14 @@ export class PassthroughProxy {
         this.logger.warn(`Upstream ${channel} closed (${code}: ${reason || "no reason"})`);
         this.onUpstreamDisconnect?.();
       },
-      onTerminalClose: (reason) => {
-        this.logger.warn(`Upstream terminal close: ${reason}`);
+      onTerminalClose: (reason, isError) => {
+        if (isError) {
+          this.logger.error(`Upstream terminal auth/connection error: ${reason}`);
+        } else {
+          this.logger.warn(`Upstream terminal close: ${reason}`);
+        }
         void this.stopAsync().finally(() => {
-          this.onTerminalClose?.(reason);
+          this.onTerminalClose?.(reason, isError);
         });
       },
       onError: (err) => {
