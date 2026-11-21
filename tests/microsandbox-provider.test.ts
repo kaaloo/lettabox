@@ -1014,4 +1014,204 @@ describe("SdkMsbRunner detached command launch and diagnostics", () => {
     await provider.acquireForConversation("conv-spin");
     expect(busyTransitions).toEqual([true, false]);
   });
+
+  test("loadConfig defaults sandbox.warmPoolSize to 1 and allows disabling with SANDBOX_WARM_POOL_SIZE=0", () => {
+    const defaultCfg = loadConfig({
+      LETTA_API_KEY: "test-key",
+      LETTA_DEVICE_ID: "dev-1",
+      SANDBOX_MODE: "microsandbox",
+    });
+    expect(defaultCfg.sandbox.warmPoolSize).toBe(1);
+
+    const disabledCfg = loadConfig({
+      LETTA_API_KEY: "test-key",
+      LETTA_DEVICE_ID: "dev-1",
+      SANDBOX_MODE: "microsandbox",
+      SANDBOX_WARM_POOL_SIZE: "0",
+    });
+    expect(disabledCfg.sandbox.warmPoolSize).toBe(0);
+  });
+
+  test("warmPoolSize=1 pre-warms during ensureReady, hands off instantly, refills in background, and cleans up on shutdown", async () => {
+    const mockMsb = createMockMsbRunner({ spawnDelayMs: 40 });
+    cleanups.push(() => mockMsb.cleanupAll());
+
+    const busyTransitions: boolean[] = [];
+    const provider = new MicrosandboxProvider({
+      image: "letta-sandbox-worker:latest",
+      lettaApiKey: "test-key",
+      lettaServerUrl: "https://api.letta.com",
+      warmPoolSize: 1,
+      idleTimeoutMs: 10_000,
+      reaperIntervalMs: 60_000,
+      msb: mockMsb.runner,
+      logger: silentLogger,
+      onMessage: () => {},
+      onBusyChange: (busy) => busyTransitions.push(busy),
+    });
+    cleanups.push(() => provider.closeAllAsync());
+
+    await provider.ensureReady();
+    expect(provider.warmPoolCount).toBe(1);
+    expect(provider.activeCount).toBe(0);
+    expect(mockMsb.spawnedSpecs).toHaveLength(1);
+    expect(busyTransitions).toEqual([]);
+
+    // Claiming the pre-warmed microVM should be near-instant (does not wait for spawnDelayMs=40ms)
+    const claimStart = Date.now();
+    const target = await provider.acquireForConversation("conv-warm-1");
+    const claimElapsed = Date.now() - claimStart;
+    expect(target).toBeDefined();
+    expect(claimElapsed).toBeLessThan(25);
+    expect(provider.activeCount).toBe(1);
+    expect(busyTransitions).toEqual([]);
+
+    // Background refill replenishes the warm standby microVM
+    const refillDeadline = Date.now() + 2_000;
+    while (provider.warmPoolCount < 1 && Date.now() < refillDeadline) {
+      await Bun.sleep(15);
+    }
+    expect(provider.warmPoolCount).toBe(1);
+    expect(mockMsb.spawnedSpecs).toHaveLength(2);
+
+    // Idle reaper must NOT reap warm standby microVMs
+    expect(await provider.reapIdleOnce()).toEqual([]);
+    expect(provider.warmPoolCount).toBe(1);
+
+    // Shutdown destroys both the active conversation microVM and the warm standby microVM
+    await provider.closeAllAsync();
+    expect(provider.activeCount).toBe(0);
+    expect(provider.warmPoolCount).toBe(0);
+    expect(mockMsb.removedNames).toHaveLength(2);
+  });
+
+  test("warm standby refill retries with backoff after a transient spawn failure", async () => {
+    const mockMsb = createMockMsbRunner();
+    cleanups.push(() => mockMsb.cleanupAll());
+
+    let attempts = 0;
+    const origRun = mockMsb.runner.runSandbox.bind(mockMsb.runner);
+    mockMsb.runner.runSandbox = async (spec) => {
+      attempts += 1;
+      if (attempts === 1) {
+        throw new Error("transient boot failure");
+      }
+      return origRun(spec);
+    };
+
+    const provider = new MicrosandboxProvider({
+      image: "letta-sandbox-worker:latest",
+      lettaApiKey: "test-key",
+      lettaServerUrl: "https://api.letta.com",
+      warmPoolSize: 1,
+      reconnectBaseDelayMs: 25,
+      reconnectMaxDelayMs: 50,
+      idleTimeoutMs: 60_000,
+      reaperIntervalMs: 60_000,
+      msb: mockMsb.runner,
+      logger: silentLogger,
+      onMessage: () => {},
+    });
+    cleanups.push(() => provider.closeAllAsync());
+
+    await provider.ensureReady();
+    expect(provider.warmPoolCount).toBe(0);
+
+    // Backoff retry should recover the standby microVM automatically
+    const deadline = Date.now() + 2_000;
+    while (provider.warmPoolCount < 1 && Date.now() < deadline) {
+      await Bun.sleep(15);
+    }
+    expect(provider.warmPoolCount).toBe(1);
+    expect(attempts).toBe(2);
+  });
+
+  test("concurrent acquisition awaits in-flight cold spawn instead of claiming a newly refilled warm standby", async () => {
+    const mockMsb = createMockMsbRunner();
+    cleanups.push(() => mockMsb.cleanupAll());
+
+    let releaseColdSpawn!: () => void;
+    const coldSpawnGate = new Promise<void>((resolve) => {
+      releaseColdSpawn = resolve;
+    });
+
+    const origRun = mockMsb.runner.runSandbox.bind(mockMsb.runner);
+    mockMsb.runner.runSandbox = async (spec) => {
+      if (spec.labels["letta-sandbox.conversation"] === "conv-race") {
+        await coldSpawnGate;
+      }
+      return origRun(spec);
+    };
+
+    const provider = new MicrosandboxProvider({
+      image: "letta-sandbox-worker:latest",
+      lettaApiKey: "test-key",
+      lettaServerUrl: "https://api.letta.com",
+      warmPoolSize: 1,
+      idleTimeoutMs: 60_000,
+      reaperIntervalMs: 60_000,
+      msb: mockMsb.runner,
+      logger: silentLogger,
+      onMessage: () => {},
+    });
+    cleanups.push(() => provider.closeAllAsync());
+
+    // Start a cold spawn for conv-race while the warm pool is still empty
+    const firstAcquire = provider.acquireForConversation("conv-race");
+    // Now warm the standby pool while the cold spawn is still in flight
+    await provider.ensureReady();
+    expect(provider.warmPoolCount).toBe(1);
+
+    // Second concurrent acquire for the SAME conversation must join the in-flight cold spawn
+    const secondAcquire = provider.acquireForConversation("conv-race");
+    expect(provider.warmPoolCount).toBe(1);
+
+    releaseColdSpawn();
+    const [t1, t2] = await Promise.all([firstAcquire, secondAcquire]);
+    expect(t1).toBe(t2);
+    expect(provider.warmPoolCount).toBe(1);
+
+    // Shutdown cleanly destroys every spawned sandbox (no leaked workers)
+    await provider.closeAllAsync();
+    expect(mockMsb.removedNames).toHaveLength(mockMsb.spawnedSpecs.length);
+  });
+
+  test("discards a disconnected warm standby and spawns a healthy replacement on acquire", async () => {
+    const mockMsb = createMockMsbRunner();
+    cleanups.push(() => mockMsb.cleanupAll());
+
+    const provider = new MicrosandboxProvider({
+      image: "letta-sandbox-worker:latest",
+      lettaApiKey: "test-key",
+      lettaServerUrl: "https://api.letta.com",
+      warmPoolSize: 1,
+      reconnectBaseDelayMs: 5_000,
+      reconnectMaxDelayMs: 10_000,
+      maxReconnectAttempts: 3,
+      idleTimeoutMs: 60_000,
+      reaperIntervalMs: 60_000,
+      msb: mockMsb.runner,
+      logger: silentLogger,
+      onMessage: () => {},
+    });
+    cleanups.push(() => provider.closeAllAsync());
+
+    await provider.ensureReady();
+    expect(provider.warmPoolCount).toBe(1);
+    const [standby] = [...mockMsb.sandboxes.values()];
+    if (!standby) throw new Error("expected a warm standby sandbox");
+
+    // Drop the standby's socket while reconnect is still pending (isOpen=false, isClosed=false)
+    standby.server.stop(true);
+    const dropDeadline = Date.now() + 2_000;
+    while (provider.warmPoolCount > 0 && Date.now() < dropDeadline) {
+      await Bun.sleep(10);
+    }
+    expect(provider.warmPoolCount).toBe(0);
+
+    // Acquire must discard the disconnected standby and return a fresh healthy target
+    const target = await provider.acquireForConversation("conv-fresh");
+    expect(target.id).not.toBe(`msb-${standby.name.slice("letta-msb-".length)}`);
+    expect(mockMsb.removedNames).toContain(standby.name);
+  });
 });

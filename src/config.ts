@@ -13,6 +13,7 @@ export interface SandboxConfig {
   startTimeoutMs: number;
   memoryLimit: string;
   cpuLimit: string;
+  warmPoolSize?: number;
   msbBin?: string;
   msbHome?: string;
   msbSecretInjection: boolean;
@@ -77,6 +78,15 @@ function parsePositiveInt(value: string | undefined, fallback: number, name: str
   const parsed = Number.parseInt(value, 10);
   if (!Number.isFinite(parsed) || parsed <= 0) {
     throw new Error(`Invalid positive integer for ${name}: ${value}`);
+  }
+  return parsed;
+}
+
+function parseNonNegativeInt(value: string | undefined, fallback: number, name: string): number {
+  if (!value) return fallback;
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    throw new Error(`Invalid non-negative integer for ${name}: ${value}`);
   }
   return parsed;
 }
@@ -203,6 +213,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
       ),
       memoryLimit: env.SANDBOX_MEMORY_LIMIT?.trim() || "2G",
       cpuLimit: env.SANDBOX_CPU_LIMIT?.trim() || "2",
+      warmPoolSize: parseNonNegativeInt(env.SANDBOX_WARM_POOL_SIZE, 1, "SANDBOX_WARM_POOL_SIZE"),
       msbBin: env.MSB_PATH?.trim() || undefined,
       msbHome: env.MSB_HOME?.trim() || join(homedir(), ".lettabox", "microsandbox"),
       msbSecretInjection,
