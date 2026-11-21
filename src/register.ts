@@ -1,3 +1,4 @@
+import { getMachineMetadata, type MachineMetadata } from "./machine-metadata.ts";
 import type { AppServerInfo, RegistrationResponse } from "./protocol.ts";
 
 export interface RegisterEnvironmentParams {
@@ -7,6 +8,7 @@ export interface RegisterEnvironmentParams {
   listenerInstanceId: string;
   connectionName: string;
   appServerInfo: AppServerInfo;
+  machine?: MachineMetadata;
   fetchImpl?: typeof fetch;
 }
 
@@ -76,6 +78,7 @@ export async function registerEnvironment(
     params.appServerInfo.lettaCodeVersion ?? params.appServerInfo.version ?? "unknown";
   const supportedCommands =
     params.appServerInfo.supported_commands ?? params.appServerInfo.supportedCommands ?? [];
+  const machine = params.machine ?? (await getMachineMetadata());
 
   const body = {
     deviceId: params.deviceId,
@@ -85,6 +88,7 @@ export async function registerEnvironment(
       lettaCodeVersion,
       os: process.platform,
       nodeVersion: process.version,
+      machine,
       environmentMessageProtocol: "v2-input",
       supportsPairedListenerGenerations: true,
       supported_commands: supportedCommands,
