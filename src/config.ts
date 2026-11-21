@@ -123,6 +123,7 @@ export function readApiKeyFromLettaSettings(
       parsed.lettaApiKey,
       parsed.accessToken,
       parsed.token,
+      (parsed.env as Record<string, unknown> | undefined)?.LETTA_API_KEY,
       (parsed.auth as Record<string, unknown> | undefined)?.apiKey,
       (parsed.auth as Record<string, unknown> | undefined)?.accessToken,
     ];
@@ -152,6 +153,45 @@ export function resolveLettaApiKey(
   const settingsFile =
     env.LETTA_SETTINGS_FILE?.trim() || join(homedir(), ".letta", "settings.json");
   return env.LETTA_API_KEY?.trim() || readApiKeyFromLettaSettings(settingsFile);
+}
+
+export interface SecretLookupOptions {
+  getSecret?: (options: { service: string; name: string }) => Promise<string | null>;
+}
+
+export async function readApiKeyFromBunSecrets(
+  env: Record<string, string | undefined> = process.env,
+  options: SecretLookupOptions = {},
+): Promise<string | undefined> {
+  const getSecret =
+    options.getSecret ??
+    (globalThis.Bun?.secrets
+      ? (opts: { service: string; name: string }) => globalThis.Bun.secrets.get(opts)
+      : undefined);
+  if (!getSecret) return undefined;
+
+  const baseService = env.LETTA_SECRETS_SERVICE_NAME?.trim() || "letta-code";
+  const prefix = env.LETTA_TEST_SECRETS_SERVICE_PREFIX?.trim();
+  const service = prefix ? `${prefix}:${baseService}` : baseService;
+
+  try {
+    const value = await getSecret({ service, name: "letta-api-key" });
+    return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export async function resolveLettaApiKeyAsync(
+  env: Record<string, string | undefined> = process.env,
+  options: SecretLookupOptions = {},
+): Promise<string | undefined> {
+  const syncKey = resolveLettaApiKey(env);
+  if (syncKey) return syncKey;
+  if (env.LETTA_SETTINGS_FILE?.trim() && !options.getSecret) {
+    return undefined;
+  }
+  return readApiKeyFromBunSecrets(env, options);
 }
 
 export function loadConfig(env: Record<string, string | undefined> = process.env): ProxyConfig {

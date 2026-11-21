@@ -8,11 +8,10 @@ Works on **macOS (Apple Silicon)** and **Linux (KVM)** using the official multi-
 
 - macOS on Apple Silicon, or Linux with KVM
 - [Bun](https://bun.sh) 1.4+
-- [`letta`](https://github.com/letta-ai/letta-code) CLI (`npm install -g @letta-ai/letta-code`)
 
 ## Install
 
-Install globally from GitHub with Bun (includes the SDK-bundled Microsandbox runtime—no separate `msb` install required):
+Install globally from GitHub with Bun (includes both the bundled Letta CLI and Microsandbox runtime—no separate `letta` or `msb` install required):
 
 ```sh
 # Latest release
@@ -87,7 +86,7 @@ Run `lettabox --help` for the full flag list.
 | `--lifecycle-output jsonl`  | —                         | _(disabled)_                         | Emit `lettaLifecycleProtocol: 1` JSONL state transitions on stdout          |
 | `--msb-path`                | `MSB_PATH`                | _(SDK-bundled runtime)_              | Advanced override for the `msb` runtime binary                              |
 | —                           | `MSB_HOME`                | `~/.lettabox/microsandbox`           | Microsandbox runtime/state home, isolated from existing `~/.microsandbox`   |
-| `--letta-bin`               | `LETTA_BIN`               | `letta`                              | Path to the `letta` binary for the managed control-plane and `letta login`  |
+| `--letta-bin`               | `LETTA_BIN`               | _(bundled `@letta-ai/letta-code`)_   | Override the bundled `letta` binary for the control-plane and `letta login` |
 | `--debug`                   | `DEBUG_FRAMES`            | `false`                              | Log routed frame envelope summaries and `event_seq` rewrites                |
 | —                           | `LETTA_API_KEY`           | `~/.letta/settings.json`             | Letta Cloud API key (auto-loaded from `letta login` settings if unset)      |
 | —                           | `MSB_SECRET_INJECTION`    | `true`                               | Inject `LETTA_API_KEY` at the host network boundary for HTTPS Letta servers |

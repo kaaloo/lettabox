@@ -88,7 +88,11 @@ export class PassthroughProxy {
       token: this.config.downstreamWsToken,
       fetchImpl: this.fetchImpl,
     });
-    const version = appServerInfo.lettaCodeVersion ?? appServerInfo.version ?? "unknown";
+    const version =
+      appServerInfo.lettaCodeVersion ??
+      appServerInfo.letta_code_version ??
+      appServerInfo.version ??
+      "unknown";
     const cmdCount = (appServerInfo.supported_commands ?? appServerInfo.supportedCommands ?? [])
       .length;
     const modeDesc =
