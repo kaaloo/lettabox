@@ -46,10 +46,10 @@ On startup, `lettabox`:
 
 Every conversation gets its own isolated microVM and is automatically reaped after 30 minutes of inactivity (never mid-turn).
 
-To inspect active microVMs:
+To inspect active microVMs from a local clone (or query `/status` with `--status-port`):
 
 ```sh
-MSB_HOME="$HOME/.lettabox/microsandbox" msb list --label letta-sandbox.managed=true
+MSB_HOME="$HOME/.lettabox/microsandbox" bunx msb list --label letta-sandbox.managed=true
 ```
 
 ## macOS Menubar Integration
