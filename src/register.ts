@@ -69,6 +69,16 @@ export async function fetchAppServerInfo(
   return (await res.json()) as AppServerInfo;
 }
 
+export class RegistrationAuthError extends Error {
+  readonly status: number;
+
+  constructor(status: number, message: string) {
+    super(message);
+    this.name = "RegistrationAuthError";
+    this.status = status;
+  }
+}
+
 export async function registerEnvironment(
   params: RegisterEnvironmentParams,
 ): Promise<RegistrationResponse> {
@@ -110,6 +120,13 @@ export async function registerEnvironment(
 
   if (!res.ok) {
     const errBody = await res.text().catch(() => "");
+    if (res.status === 401 || res.status === 403) {
+      const detail = errBody.trim().slice(0, 200);
+      throw new RegistrationAuthError(
+        res.status,
+        `Authentication failed during environment registration (HTTP ${res.status}). Your token may be expired or invalid — run \`letta login\` or update LETTA_API_KEY.${detail ? ` (${detail})` : ""}`,
+      );
+    }
     throw new Error(`POST /v1/environments/register failed (${res.status}): ${errBody}`);
   }
 

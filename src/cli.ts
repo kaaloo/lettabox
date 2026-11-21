@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 import pkg from "../package.json";
-import { loadConfig } from "./config.ts";
+import { loadConfig, MissingApiKeyError, resolveLettaApiKey } from "./config.ts";
 import { type RunningControlPlane, spawnManagedControlPlane } from "./control-plane.ts";
 import { type Logger, MultiplexerProxy } from "./proxy.ts";
 import { type StatusServer, startStatusServer } from "./status-server.ts";
@@ -182,7 +182,18 @@ export function parseCliArgs(
 export interface RunCliOptions {
   env?: Record<string, string | undefined>;
   spawnControlPlane?: typeof spawnManagedControlPlane;
+  runInteractiveLogin?: (lettaBin: string) => Promise<number>;
+  isInteractiveTty?: boolean;
   exit?: (code: number) => void;
+}
+
+async function defaultRunInteractiveLogin(lettaBin: string): Promise<number> {
+  const proc = Bun.spawn([lettaBin, "login"], {
+    stdin: "inherit",
+    stdout: "inherit",
+    stderr: "inherit",
+  });
+  return proc.exited;
 }
 
 export async function runCli(
@@ -192,6 +203,9 @@ export async function runCli(
   const baseEnv = options.env ?? process.env;
   const exit = options.exit ?? ((code: number) => process.exit(code));
   const spawnControlPlane = options.spawnControlPlane ?? spawnManagedControlPlane;
+  const runInteractiveLogin = options.runInteractiveLogin ?? defaultRunInteractiveLogin;
+  const isInteractiveTty =
+    options.isInteractiveTty ?? Boolean(process.stdin.isTTY && process.stdout.isTTY);
 
   const parsed = parseCliArgs(argv, baseEnv);
   if (parsed.help) {
@@ -247,6 +261,22 @@ export async function runCli(
   emitLifecycle("starting");
 
   try {
+    if (!resolveLettaApiKey(mergedEnv) && !jsonlMode && isInteractiveTty) {
+      const lettaBin = parsed.lettaBin?.trim() || "letta";
+      logInfo(`No Letta credentials found. Launching \`${lettaBin} login\`...`);
+      const loginCode = await runInteractiveLogin(lettaBin);
+      if (loginCode !== 0) {
+        throw new MissingApiKeyError(
+          `\`${lettaBin} login\` exited with code ${loginCode}. Set LETTA_API_KEY or run \`letta login\` to authenticate.`,
+        );
+      }
+      if (!resolveLettaApiKey(mergedEnv)) {
+        throw new MissingApiKeyError(
+          `\`${lettaBin} login\` completed, but no API key was found in ~/.letta/settings.json. Set LETTA_API_KEY or retry \`letta login\`.`,
+        );
+      }
+    }
+
     if (parsed.autoControlPlane) {
       // Load early to resolve LETTA_API_KEY (including ~/.letta/settings.json fallback) & LETTA_SERVER_URL
       const preConfig = loadConfig(mergedEnv);
@@ -295,8 +325,8 @@ export async function runCli(
           emitLifecycle(anyBusy ? "working" : "ready");
         }
       },
-      onTerminalClose: () => {
-        void cleanupAndExit(0);
+      onTerminalClose: (_reason, isError) => {
+        void cleanupAndExit(isError ? 1 : 0);
       },
     });
     proxy = activeProxy;

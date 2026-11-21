@@ -137,14 +137,27 @@ export function readApiKeyFromLettaSettings(
   }
 }
 
-export function loadConfig(env: Record<string, string | undefined> = process.env): ProxyConfig {
+export class MissingApiKeyError extends Error {
+  constructor(
+    message = "LETTA_API_KEY is required (set LETTA_API_KEY or log in via `letta login` so ~/.letta/settings.json has a token)",
+  ) {
+    super(message);
+    this.name = "MissingApiKeyError";
+  }
+}
+
+export function resolveLettaApiKey(
+  env: Record<string, string | undefined> = process.env,
+): string | undefined {
   const settingsFile =
     env.LETTA_SETTINGS_FILE?.trim() || join(homedir(), ".letta", "settings.json");
-  const lettaApiKey = env.LETTA_API_KEY?.trim() || readApiKeyFromLettaSettings(settingsFile);
+  return env.LETTA_API_KEY?.trim() || readApiKeyFromLettaSettings(settingsFile);
+}
+
+export function loadConfig(env: Record<string, string | undefined> = process.env): ProxyConfig {
+  const lettaApiKey = resolveLettaApiKey(env);
   if (!lettaApiKey) {
-    throw new Error(
-      "LETTA_API_KEY is required (set LETTA_API_KEY or log in via `letta login` so ~/.letta/settings.json has a token)",
-    );
+    throw new MissingApiKeyError();
   }
 
   const lettaServerUrl = (env.LETTA_SERVER_URL?.trim() || "https://api.letta.com").replace(
