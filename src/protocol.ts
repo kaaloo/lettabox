@@ -28,6 +28,7 @@ export type UpstreamChannel = "control" | "stream";
 
 export interface AppServerInfo {
   lettaCodeVersion?: string;
+  letta_code_version?: string;
   version?: string;
   supported_commands?: string[];
   supportedCommands?: string[];

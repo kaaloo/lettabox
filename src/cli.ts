@@ -1,7 +1,11 @@
 #!/usr/bin/env bun
 import pkg from "../package.json";
-import { loadConfig, MissingApiKeyError, resolveLettaApiKey } from "./config.ts";
-import { type RunningControlPlane, spawnManagedControlPlane } from "./control-plane.ts";
+import { loadConfig, MissingApiKeyError, resolveLettaApiKeyAsync } from "./config.ts";
+import {
+  type RunningControlPlane,
+  resolveLettaCommand,
+  spawnManagedControlPlane,
+} from "./control-plane.ts";
 import { type Logger, MultiplexerProxy } from "./proxy.ts";
 import { type StatusServer, startStatusServer } from "./status-server.ts";
 
@@ -40,7 +44,7 @@ Options:
   --control-plane-url <ws://>     Attach to an existing control-plane letta server instead of auto-spawning
   --status-port <port>            Expose local http://127.0.0.1:<port>/status JSON endpoint
   --lifecycle-output <jsonl>      Emit lettaLifecycleProtocol v1 JSONL events on stdout (for macOS menubar)
-  --letta-bin <path>              Path to local letta CLI binary for control-plane (default: letta)
+  --letta-bin <path>              Override the bundled letta CLI binary for control-plane (advanced)
   --msb-path <path>               Override the SDK-bundled msb runtime binary (advanced)
   --debug                         Log routed envelope frames and event_seq rewrites
   -v, --version                   Print version and exit
@@ -187,8 +191,9 @@ export interface RunCliOptions {
   exit?: (code: number) => void;
 }
 
-async function defaultRunInteractiveLogin(lettaBin: string): Promise<number> {
-  const proc = Bun.spawn([lettaBin, "login"], {
+async function defaultRunInteractiveLogin(lettaBin?: string): Promise<number> {
+  const command = resolveLettaCommand(lettaBin);
+  const proc = Bun.spawn([...command, "login"], {
     stdin: "inherit",
     stdout: "inherit",
     stderr: "inherit",
@@ -203,7 +208,6 @@ export async function runCli(
   const baseEnv = options.env ?? process.env;
   const exit = options.exit ?? ((code: number) => process.exit(code));
   const spawnControlPlane = options.spawnControlPlane ?? spawnManagedControlPlane;
-  const runInteractiveLogin = options.runInteractiveLogin ?? defaultRunInteractiveLogin;
   const isInteractiveTty =
     options.isInteractiveTty ?? Boolean(process.stdin.isTTY && process.stdout.isTTY);
 
@@ -261,20 +265,29 @@ export async function runCli(
   emitLifecycle("starting");
 
   try {
-    if (!resolveLettaApiKey(mergedEnv) && !jsonlMode && isInteractiveTty) {
-      const lettaBin = parsed.lettaBin?.trim() || "letta";
-      logInfo(`No Letta credentials found. Launching \`${lettaBin} login\`...`);
-      const loginCode = await runInteractiveLogin(lettaBin);
+    let resolvedApiKey = await resolveLettaApiKeyAsync(mergedEnv);
+    if (!resolvedApiKey && !jsonlMode && isInteractiveTty) {
+      const explicitBin = parsed.lettaBin?.trim();
+      const label = explicitBin || "letta";
+      logInfo(`No Letta credentials found. Launching \`${label} login\`...`);
+      const loginCode = options.runInteractiveLogin
+        ? await options.runInteractiveLogin(label)
+        : await defaultRunInteractiveLogin(explicitBin);
       if (loginCode !== 0) {
         throw new MissingApiKeyError(
-          `\`${lettaBin} login\` exited with code ${loginCode}. Set LETTA_API_KEY or run \`letta login\` to authenticate.`,
+          `\`${label} login\` exited with code ${loginCode}. Set LETTA_API_KEY or run \`letta login\` to authenticate.`,
         );
       }
-      if (!resolveLettaApiKey(mergedEnv)) {
+      resolvedApiKey = await resolveLettaApiKeyAsync(mergedEnv);
+      if (!resolvedApiKey) {
         throw new MissingApiKeyError(
-          `\`${lettaBin} login\` completed, but no API key was found in ~/.letta/settings.json. Set LETTA_API_KEY or retry \`letta login\`.`,
+          `\`${label} login\` completed, but no API key was found in ~/.letta/settings.json or keychain. Set LETTA_API_KEY or retry \`letta login\`.`,
         );
       }
+    }
+
+    if (resolvedApiKey && !mergedEnv.LETTA_API_KEY?.trim()) {
+      mergedEnv.LETTA_API_KEY = resolvedApiKey;
     }
 
     if (parsed.autoControlPlane) {

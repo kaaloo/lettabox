@@ -85,7 +85,10 @@ export async function registerEnvironment(
   const fetchImpl = params.fetchImpl ?? fetch;
   const baseUrl = params.lettaServerUrl.replace(/\/+$/, "");
   const lettaCodeVersion =
-    params.appServerInfo.lettaCodeVersion ?? params.appServerInfo.version ?? "unknown";
+    params.appServerInfo.lettaCodeVersion ??
+    params.appServerInfo.letta_code_version ??
+    params.appServerInfo.version ??
+    "unknown";
   const supportedCommands =
     params.appServerInfo.supported_commands ?? params.appServerInfo.supportedCommands ?? [];
   const machine = params.machine ?? (await getMachineMetadata());
