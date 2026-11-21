@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.3.0](https://github.com/kaaloo/lettabox/compare/lettabox-v0.2.0...lettabox-v0.3.0) (2026-11-21)
+
+
+### Features
+
+* bundle @letta-ai/letta-code so global letta CLI is no longer required ([f5ee462](https://github.com/kaaloo/lettabox/commit/f5ee46214200dda3af3342f62ba4bb06668fd07d))
+* bundle @letta-ai/letta-code so global letta CLI is no longer required ([3d9f0d3](https://github.com/kaaloo/lettabox/commit/3d9f0d328947aae133f881db69ef3922ce90583e))
+
 ## [0.2.0](https://github.com/kaaloo/lettabox/compare/lettabox-v0.1.0...lettabox-v0.2.0) (2026-11-21)
 
 
