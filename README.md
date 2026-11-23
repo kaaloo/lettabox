@@ -40,6 +40,8 @@ Select **`my-lettabox`** in `chat.letta.com`. Every conversation lazily boots it
 
 Microsandbox runtime and state live in `~/.lettabox/microsandbox` by default, isolated from any existing `~/.microsandbox` installation. Set `MSB_HOME` to use a different home.
 
+On startup, `lettabox` also caches the pinned official Linux `gh` CLI binary (SHA-256 verified) under `$MSB_HOME/cache/gh/` and injects it into every microVM at `/usr/local/bin/gh` before boot while keeping `ghcr.io/letta-ai/letta-code:latest` unmodified.
+
 Inspect active microVMs at any time with the locally installed SDK CLI shim:
 
 ```sh

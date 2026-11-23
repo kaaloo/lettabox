@@ -13,6 +13,7 @@ import {
   SandboxNotFoundError,
 } from "microsandbox";
 import pkg from "../package.json";
+import { ensureGhBinaryCached, GH_GUEST_BIN_PATH } from "./gh-binary.ts";
 
 export const EXPECTED_MSB_RUNTIME_VERSION: string = pkg.dependencies.microsandbox.replace(
   /^[~^]/,
@@ -69,6 +70,14 @@ export function unsetNativeProcessEnv(key: string): void {
   }
 }
 
+export interface MsbRootfsPatch {
+  kind: "copyFile";
+  src: string;
+  dst: string;
+  mode?: number;
+  replace?: boolean;
+}
+
 export interface MsbRunSpec {
   name: string;
   image: string;
@@ -87,6 +96,7 @@ export interface MsbRunSpec {
   };
   entrypoint?: string;
   command?: string[];
+  patches?: MsbRootfsPatch[];
 }
 
 export interface MsbRunner {
@@ -147,6 +157,10 @@ export interface SdkSandboxOps {
   get: (name: string) => Promise<SdkSandboxHandle>;
 }
 
+export interface SdkGhBinaryOps {
+  ensureBinary: (msbHome: string) => Promise<string>;
+}
+
 export interface SdkMsbRunnerLogger {
   info: (msg: string) => void;
   warn: (msg: string) => void;
@@ -160,6 +174,7 @@ export interface SdkMsbRunnerOptions {
   env?: Record<string, string | undefined>;
   runtimeOps?: SdkRuntimeOps;
   imageOps?: SdkImageOps;
+  ghBinaryOps?: SdkGhBinaryOps;
   sandboxOps?: SdkSandboxOps;
   logger?: SdkMsbRunnerLogger;
 }
@@ -223,6 +238,20 @@ export function buildSdkSandbox(spec: MsbRunSpec): SandboxBuilder {
   }
   if (spec.command && spec.command.length > 0) {
     builder.cmd(spec.command);
+  }
+  if (spec.patches && spec.patches.length > 0) {
+    const patches = spec.patches;
+    builder.patch((patch) => {
+      for (const entry of patches) {
+        if (entry.kind === "copyFile") {
+          patch.copyFile(entry.src, entry.dst, {
+            mode: entry.mode,
+            replace: entry.replace,
+          });
+        }
+      }
+      return patch;
+    });
   }
 
   return builder;
@@ -295,9 +324,11 @@ export class SdkMsbRunner implements MsbRunner {
   private readonly mirrorToNativeEnv: boolean;
   private readonly runtimeOps: SdkRuntimeOps;
   private readonly imageOps: SdkImageOps;
+  private readonly ghBinaryOps: SdkGhBinaryOps;
   private readonly sandboxOps: SdkSandboxOps;
   private readonly logger?: SdkMsbRunnerLogger;
   private readyPromise: Promise<ResolvedRuntime> | null = null;
+  private ghBinaryPromise: Promise<string> | null = null;
   private readonly readyImages = new Map<string, Promise<void>>();
 
   constructor(options: SdkMsbRunnerOptions = {}) {
@@ -316,6 +347,9 @@ export class SdkMsbRunner implements MsbRunner {
       installRuntime,
     };
     this.imageOps = options.imageOps ?? defaultSdkImageOps;
+    this.ghBinaryOps = options.ghBinaryOps ?? {
+      ensureBinary: (msbHome) => ensureGhBinaryCached({ msbHome, logger: options.logger }),
+    };
     this.sandboxOps = options.sandboxOps ?? {
       create: (spec) => buildSdkSandbox(spec).create(),
       get: (name) => Sandbox.get(name),
@@ -327,14 +361,34 @@ export class SdkMsbRunner implements MsbRunner {
     const resolved = await this.ensureRuntimeReady();
     const targetImage = image?.trim() || this.defaultImage;
     if (targetImage) {
-      await this.ensureImageCached(resolved, targetImage);
+      await Promise.all([
+        this.ensureImageCached(resolved, targetImage),
+        this.ensureGhBinaryReady(),
+      ]);
     }
   }
 
   async runSandbox(spec: MsbRunSpec): Promise<string> {
     await this.ensureReady(spec.image);
-    const sandbox = await this.sandboxOps.create(spec);
-    const launch = resolveMsbLaunchCommand(spec);
+    const ghBinaryPath = await this.ensureGhBinaryReady();
+    const hasExplicitGhPatch = spec.patches?.some((patch) => patch.dst === GH_GUEST_BIN_PATH);
+    const effectiveSpec: MsbRunSpec = hasExplicitGhPatch
+      ? spec
+      : {
+          ...spec,
+          patches: [
+            {
+              kind: "copyFile",
+              src: ghBinaryPath,
+              dst: GH_GUEST_BIN_PATH,
+              mode: 0o755,
+              replace: true,
+            },
+            ...(spec.patches ?? []),
+          ],
+        };
+    const sandbox = await this.sandboxOps.create(effectiveSpec);
+    const launch = resolveMsbLaunchCommand(effectiveSpec);
     try {
       if (launch) {
         // Microsandbox SDK's Sandbox.builder(...).create() only boots the microVM
@@ -420,6 +474,16 @@ export class SdkMsbRunner implements MsbRunner {
       });
     }
     return this.readyPromise;
+  }
+
+  private async ensureGhBinaryReady(): Promise<string> {
+    if (!this.ghBinaryPromise) {
+      this.ghBinaryPromise = this.ghBinaryOps.ensureBinary(this.msbHome).catch((err) => {
+        this.ghBinaryPromise = null;
+        throw err;
+      });
+    }
+    return this.ghBinaryPromise;
   }
 
   private async ensureImageCached(resolved: ResolvedRuntime, reference: string): Promise<void> {

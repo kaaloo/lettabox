@@ -9,6 +9,7 @@ import {
   parseMsbCpuCount,
   parseMsbMemoryMiB,
   resolveMsbLaunchCommand,
+  type SdkGhBinaryOps,
   type SdkImageOps,
   SdkMsbRunner,
   type SdkRuntimeOps,
@@ -191,6 +192,41 @@ describe("Microsandbox SDK helpers & config", () => {
       },
     });
     expect(config.env).not.toContainEqual({ key: "LETTA_API_KEY", value: "sk-let-SUPER-SECRET" });
+  });
+
+  test("buildSdkSandbox encodes copyFile patches into native config", async () => {
+    const config = JSON.parse(
+      JSON.stringify(
+        await buildSdkSandbox({
+          name: "letta-msb-patch-1",
+          image: "ghcr.io/letta-ai/letta-code:latest",
+          hostPort: 49156,
+          guestPort: 4500,
+          labels: {},
+          env: {},
+          patches: [
+            {
+              kind: "copyFile",
+              src: "/tmp/cached-gh",
+              dst: "/usr/local/bin/gh",
+              mode: 0o755,
+              replace: true,
+            },
+          ],
+        }).build(),
+      ),
+    );
+
+    expect(config.patches).toEqual([
+      {
+        CopyFile: {
+          src: "/tmp/cached-gh",
+          dst: "/usr/local/bin/gh",
+          mode: 0o755,
+          replace: true,
+        },
+      },
+    ]);
   });
 
   test("loadConfig supports SANDBOX_MODE=microsandbox and msb alias", () => {
@@ -720,9 +756,14 @@ describe("SdkMsbRunner detached command launch and diagnostics", () => {
     },
   };
 
+  const cachedGhBinaryOps: SdkGhBinaryOps = {
+    ensureBinary: async (msbHome) => `${msbHome}/cache/gh/2.104.0/linux-arm64/gh`,
+  };
+
   test("ensureReady skips image pull when image is already cached", async () => {
     let isCachedCalls = 0;
     let pullCalls = 0;
+    let ghEnsureCalls = 0;
     const runner = new SdkMsbRunner({
       msbHome: "/home/test/.lettabox/microsandbox",
       image: "ghcr.io/letta-ai/letta-code:latest",
@@ -738,13 +779,46 @@ describe("SdkMsbRunner detached command launch and diagnostics", () => {
           pullCalls += 1;
         },
       },
+      ghBinaryOps: {
+        ensureBinary: async (msbHome) => {
+          ghEnsureCalls += 1;
+          return `${msbHome}/cache/gh/2.104.0/linux-arm64/gh`;
+        },
+      },
       logger: silentLogger,
     });
 
-    await runner.ensureReady();
+    await Promise.all([runner.ensureReady(), runner.ensureReady()]);
     await runner.ensureReady();
     expect(isCachedCalls).toBe(1);
     expect(pullCalls).toBe(0);
+    expect(ghEnsureCalls).toBe(1);
+  });
+
+  test("ensureReady retries gh binary caching after a transient failure", async () => {
+    let ghAttempts = 0;
+    const runner = new SdkMsbRunner({
+      msbHome: "/home/test/.lettabox/microsandbox",
+      image: "ghcr.io/letta-ai/letta-code:latest",
+      expectedVersion: "0.7.16",
+      env: {},
+      runtimeOps: readyRuntimeOps,
+      imageOps: cachedImageOps,
+      ghBinaryOps: {
+        ensureBinary: async (msbHome) => {
+          ghAttempts += 1;
+          if (ghAttempts === 1) {
+            throw new Error("transient gh download failure");
+          }
+          return `${msbHome}/cache/gh/2.104.0/linux-arm64/gh`;
+        },
+      },
+      logger: silentLogger,
+    });
+
+    await expect(runner.ensureReady()).rejects.toThrow("transient gh download failure");
+    await runner.ensureReady();
+    expect(ghAttempts).toBe(2);
   });
 
   test("ensureReady pulls uncached image using the resolved msb binary and pinned env", async () => {
@@ -771,6 +845,7 @@ describe("SdkMsbRunner detached command launch and diagnostics", () => {
           });
         },
       },
+      ghBinaryOps: cachedGhBinaryOps,
       logger: silentLogger,
     });
 
@@ -824,11 +899,13 @@ describe("SdkMsbRunner detached command launch and diagnostics", () => {
     ).toBeNull();
   });
 
-  test("runSandbox launches the bootstrap command via execDetached before detaching", async () => {
+  test("runSandbox launches the bootstrap command via execDetached before detaching and injects gh binary patch", async () => {
     const events: string[] = [];
     const execCalls: Array<{ cmd: string; args: string[] }> = [];
+    const createdSpecs: MsbRunSpec[] = [];
     const sandboxOps: SdkSandboxOps = {
       create: async (spec) => {
+        createdSpecs.push(spec);
         events.push(`create:${spec.name}`);
         return {
           name: spec.name,
@@ -856,6 +933,7 @@ describe("SdkMsbRunner detached command launch and diagnostics", () => {
       env: {},
       runtimeOps: readyRuntimeOps,
       imageOps: cachedImageOps,
+      ghBinaryOps: cachedGhBinaryOps,
       sandboxOps,
       logger: silentLogger,
     });
@@ -869,11 +947,64 @@ describe("SdkMsbRunner detached command launch and diagnostics", () => {
       env: { LETTA_WS_TOKEN: "tok" },
       entrypoint: "/bin/sh",
       command: ["-c", "exec letta server"],
+      patches: [
+        {
+          kind: "copyFile",
+          src: "/tmp/extra",
+          dst: "/etc/extra",
+          mode: 0o644,
+          replace: true,
+        },
+      ],
     });
 
     expect(createdName).toBe("letta-msb-test-1");
     expect(events).toEqual(["create:letta-msb-test-1", "execDetached", "detach"]);
     expect(execCalls).toEqual([{ cmd: "/bin/sh", args: ["-c", "exec letta server"] }]);
+    expect(createdSpecs[0]?.patches).toEqual([
+      {
+        kind: "copyFile",
+        src: "/home/test/.lettabox/microsandbox/cache/gh/2.104.0/linux-arm64/gh",
+        dst: "/usr/local/bin/gh",
+        mode: 0o755,
+        replace: true,
+      },
+      {
+        kind: "copyFile",
+        src: "/tmp/extra",
+        dst: "/etc/extra",
+        mode: 0o644,
+        replace: true,
+      },
+    ]);
+
+    // Caller-supplied /usr/local/bin/gh patch takes precedence without duplicating
+    await runner.runSandbox({
+      name: "letta-msb-test-override",
+      image: "ghcr.io/letta-ai/letta-code:latest",
+      hostPort: 20713,
+      guestPort: 4500,
+      labels: {},
+      env: {},
+      patches: [
+        {
+          kind: "copyFile",
+          src: "/custom/gh",
+          dst: "/usr/local/bin/gh",
+          mode: 0o755,
+          replace: true,
+        },
+      ],
+    });
+    expect(createdSpecs[1]?.patches).toEqual([
+      {
+        kind: "copyFile",
+        src: "/custom/gh",
+        dst: "/usr/local/bin/gh",
+        mode: 0o755,
+        replace: true,
+      },
+    ]);
   });
 
   test("runSandbox destroys the created sandbox if execDetached fails", async () => {
@@ -902,6 +1033,7 @@ describe("SdkMsbRunner detached command launch and diagnostics", () => {
       env: {},
       runtimeOps: readyRuntimeOps,
       imageOps: cachedImageOps,
+      ghBinaryOps: cachedGhBinaryOps,
       sandboxOps,
       logger: silentLogger,
     });
@@ -953,6 +1085,7 @@ describe("SdkMsbRunner detached command launch and diagnostics", () => {
       env: {},
       runtimeOps: readyRuntimeOps,
       imageOps: cachedImageOps,
+      ghBinaryOps: cachedGhBinaryOps,
       sandboxOps,
       logger: silentLogger,
     });
