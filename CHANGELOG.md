@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.4.0](https://github.com/kaaloo/lettabox/compare/lettabox-v0.3.0...lettabox-v0.4.0) (2026-11-23)
+
+
+### Features
+
+* **msb:** include gh CLI binary in microsandbox microVMs ([fa92a8c](https://github.com/kaaloo/lettabox/commit/fa92a8c7882d78dd376671155b0b3bc5e2b59fd2))
+* **msb:** inject pinned gh CLI binary into microsandbox rootfs ([e36f6f1](https://github.com/kaaloo/lettabox/commit/e36f6f19f6dd4d41e92ca28ef2aa369ba92e07c4))
+
 ## [0.3.0](https://github.com/kaaloo/lettabox/compare/lettabox-v0.2.0...lettabox-v0.3.0) (2026-11-21)
 
 
