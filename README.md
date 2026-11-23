@@ -42,7 +42,7 @@ On startup, `lettabox`:
 
 1. Loads your Letta token from `LETTA_API_KEY` or `~/.letta/settings.json` (in an interactive terminal, automatically runs `letta login` if you aren't signed in yet).
 2. Starts a managed local control-plane `letta server`.
-3. Verifies the matching Microsandbox runtime under `~/.lettabox/microsandbox` (isolated from any existing `~/.microsandbox` install), pre-pulls `ghcr.io/letta-ai/letta-code:latest` if not cached, and pre-warms a standby microVM so the first conversation hands off immediately.
+3. Verifies the matching Microsandbox runtime under `~/.lettabox/microsandbox` (isolated from any existing `~/.microsandbox` install), pre-pulls `ghcr.io/letta-ai/letta-code:latest` if not cached, caches the pinned official Linux `gh` CLI binary (SHA-256 verified) under `$MSB_HOME/cache/gh/` and injects it into every microVM at `/usr/local/bin/gh` before boot, and pre-warms a standby microVM so the first conversation hands off immediately.
 4. Connects to Letta Cloud—your computer appears under **Computers** on `chat.letta.com` with a `📦` status subtitle (e.g. `📦 MacBook Pro · Apple M5 Pro · 24 GB`).
 
 Every conversation gets its own isolated microVM and is automatically reaped after 30 minutes of inactivity (never mid-turn).
