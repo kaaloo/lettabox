@@ -4,7 +4,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createLifecycleEmitter, parseCliArgs, runCli } from "../src/cli.ts";
 import { loadConfig, readApiKeyFromLettaSettings } from "../src/config.ts";
-import { spawnManagedControlPlane } from "../src/control-plane.ts";
+import {
+  resolveBundledLettaScript,
+  resolveLettaCommand,
+  spawnManagedControlPlane,
+} from "../src/control-plane.ts";
+import { fetchAppServerInfo, waitForDownstreamHealth } from "../src/register.ts";
 import { type StatusServer, startStatusServer } from "../src/status-server.ts";
 
 const tempDirs: string[] = [];
@@ -284,5 +289,36 @@ describe("StatusServer", () => {
     await cp2.stop();
     await Bun.sleep(30);
     expect(cleanCodes).toEqual([]);
+  });
+
+  test("resolveBundledLettaScript and resolveLettaCommand prefer bundled @letta-ai/letta-code under Bun", () => {
+    const bundled = resolveBundledLettaScript();
+    expect(bundled).not.toBeNull();
+    expect(bundled?.endsWith("letta.js")).toBe(true);
+
+    expect(resolveLettaCommand(undefined)).toEqual([process.execPath, bundled!]);
+    expect(resolveLettaCommand("  ")).toEqual([process.execPath, bundled!]);
+    expect(resolveLettaCommand("/custom/letta")).toEqual(["/custom/letta"]);
+    expect(resolveLettaCommand(undefined, { resolveBundled: () => null })).toEqual(["letta"]);
+  });
+
+  test("spawnManagedControlPlane boots bundled @letta-ai/letta-code without an explicit lettaBin", async () => {
+    const cp = await spawnManagedControlPlane({
+      lettaApiKey: "test-dummy-key",
+      lettaServerUrl: "https://api.letta.com",
+    });
+
+    try {
+      await waitForDownstreamHealth(cp.httpUrl, { timeoutMs: 15_000, pollIntervalMs: 100 });
+      const info = await fetchAppServerInfo(cp.httpUrl);
+      const version =
+        info.lettaCodeVersion ??
+        (typeof info.letta_code_version === "string" ? info.letta_code_version : undefined) ??
+        info.version;
+      expect(typeof version).toBe("string");
+      expect(version?.length).toBeGreaterThan(0);
+    } finally {
+      await cp.stop();
+    }
   });
 });

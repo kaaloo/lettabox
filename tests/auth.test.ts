@@ -167,4 +167,42 @@ describe("Authentication & login handling", () => {
     expect(terminalReason).toContain("HTTP 401");
     expect(terminalReason).toContain("letta login");
   });
+
+  test("readApiKeyFromLettaSettings supports nested env.LETTA_API_KEY written by letta-code", async () => {
+    const { readApiKeyFromLettaSettings } = await import("../src/config.ts");
+    const dir = mkdtempSync(join(tmpdir(), "lettabox-auth-env-"));
+    tempDirs.push(dir);
+    const settingsFile = join(dir, "settings.json");
+    writeFileSync(
+      settingsFile,
+      JSON.stringify({ env: { LETTA_API_KEY: "sk-let-from-env-block" } }),
+      "utf8",
+    );
+
+    expect(readApiKeyFromLettaSettings(settingsFile)).toBe("sk-let-from-env-block");
+  });
+
+  test("resolveLettaApiKeyAsync falls back to Bun.secrets keychain storage", async () => {
+    const { resolveLettaApiKeyAsync } = await import("../src/config.ts");
+    const dir = mkdtempSync(join(tmpdir(), "lettabox-auth-secret-"));
+    tempDirs.push(dir);
+    const missingSettings = join(dir, "missing.json");
+
+    const queries: Array<{ service: string; name: string }> = [];
+    const key = await resolveLettaApiKeyAsync(
+      {
+        LETTA_SETTINGS_FILE: missingSettings,
+        LETTA_TEST_SECRETS_SERVICE_PREFIX: "test-prefix",
+      },
+      {
+        getSecret: async (opts) => {
+          queries.push(opts);
+          return "sk-let-from-keychain";
+        },
+      },
+    );
+
+    expect(key).toBe("sk-let-from-keychain");
+    expect(queries).toEqual([{ service: "test-prefix:letta-code", name: "letta-api-key" }]);
+  });
 });
