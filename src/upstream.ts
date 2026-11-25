@@ -22,6 +22,7 @@ export interface UpstreamRelayClientOptions {
   listenerInstanceId: string;
   connectionName: string;
   appServerInfo: AppServerInfo;
+  statusEmoji?: string;
   heartbeatIntervalMs?: number;
   heartbeatMaxMissed?: number;
   reconnectBaseDelayMs?: number;
@@ -210,6 +211,7 @@ export class UpstreamRelayClient {
           listenerInstanceId: this.options.listenerInstanceId,
           connectionName: this.options.connectionName,
           appServerInfo: this.options.appServerInfo,
+          statusEmoji: this.options.statusEmoji,
           fetchImpl: this.options.fetchImpl,
         });
       }

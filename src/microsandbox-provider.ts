@@ -1,7 +1,8 @@
 import { createHash, randomBytes } from "node:crypto";
 import { createServer } from "node:net";
+import type { MsbComputeType, SandboxBackend } from "./config.ts";
 import { DownstreamClient } from "./downstream.ts";
-import { type MsbRunner, SdkMsbRunner } from "./msb-runner.ts";
+import { type MsbRunner, type MsbRunResult, SdkMsbRunner } from "./msb-runner.ts";
 import { parseJsonObject } from "./protocol.ts";
 import { waitForDownstreamHealth } from "./register.ts";
 import type { ConversationTargetProvider, DownstreamTarget } from "./router.ts";
@@ -19,15 +20,21 @@ export interface ActiveSandboxInfo {
   id: string;
   sandboxName: string;
   conversationId?: string;
-  hostPort: number;
+  hostPort?: number;
+  serviceUrl?: string;
   busy: boolean;
   lastActivityAt: number;
 }
 
 export interface MicrosandboxProviderOptions {
+  backend?: SandboxBackend;
   image: string;
   msbBin?: string;
   msbHome?: string;
+  msbApiKey?: string;
+  msbApiUrl?: string;
+  msbProfile?: string;
+  msbComputeType?: MsbComputeType;
   guestPort?: number;
   memoryLimit?: string;
   cpuLimit?: string;
@@ -54,7 +61,8 @@ export interface MicrosandboxProviderOptions {
 interface ManagedMicrosandbox {
   readonly id: string;
   readonly sandboxName: string;
-  readonly hostPort: number;
+  readonly hostPort?: number;
+  readonly serviceUrl?: string;
   readonly wsUrl: string;
   readonly client: DownstreamClient;
   readonly target: DownstreamTarget;
@@ -126,6 +134,7 @@ function updateBusyFromDownstreamFrame(sandbox: ManagedMicrosandbox, raw: string
 
 export class MicrosandboxProvider implements ConversationTargetProvider {
   private readonly options: MicrosandboxProviderOptions;
+  private readonly backend: SandboxBackend;
   private readonly msb: MsbRunner;
   private readonly guestPort: number;
   private readonly warmPoolSize: number;
@@ -150,11 +159,17 @@ export class MicrosandboxProvider implements ConversationTargetProvider {
 
   constructor(options: MicrosandboxProviderOptions) {
     this.options = options;
+    this.backend = options.backend ?? "local";
     this.msb =
       options.msb ??
       new SdkMsbRunner({
+        backend: this.backend,
         msbBin: options.msbBin,
         msbHome: options.msbHome,
+        msbApiKey: options.msbApiKey,
+        msbApiUrl: options.msbApiUrl,
+        msbProfile: options.msbProfile,
+        msbComputeType: options.msbComputeType,
         image: options.image,
         logger: options.logger,
       });
@@ -199,7 +214,8 @@ export class MicrosandboxProvider implements ConversationTargetProvider {
         id: s.id,
         sandboxName: s.sandboxName,
         conversationId: s.conversationId,
-        hostPort: s.hostPort,
+        ...(s.hostPort !== undefined ? { hostPort: s.hostPort } : {}),
+        ...(s.serviceUrl !== undefined ? { serviceUrl: s.serviceUrl } : {}),
         busy: s.busy,
         lastActivityAt: s.lastActivityAt,
       }));
@@ -501,13 +517,14 @@ export class MicrosandboxProvider implements ConversationTargetProvider {
     warmStandby?: boolean;
   }): Promise<ManagedMicrosandbox> {
     const t0 = Date.now();
+    const isCloud = this.backend === "cloud";
     const key =
       scope.conversationId ??
       scope.pendingRequestId ??
       (scope.warmStandby ? "warm-standby" : "ephemeral");
     const sandboxName = makeMsbSandboxName(key);
     const capabilityToken = randomBytes(32).toString("hex");
-    const hostPort = await this.reserveHostPort();
+    const hostPort = isCloud ? undefined : await this.reserveHostPort();
 
     const labels: Record<string, string> = {
       [MANAGED_LABEL_KEY]: MANAGED_LABEL_VALUE,
@@ -530,16 +547,20 @@ export class MicrosandboxProvider implements ConversationTargetProvider {
     }
 
     this.options.logger?.info(
-      `Spawning microsandbox ${sandboxName} (port=127.0.0.1:${hostPort}->${this.guestPort}, secretProxy=${useSecretInjection}) for ${key}`,
+      isCloud
+        ? `Spawning cloud microsandbox ${sandboxName} (guestPort=${this.guestPort}, secretProxy=${useSecretInjection}) for ${key}`
+        : `Spawning microsandbox ${sandboxName} (port=127.0.0.1:${hostPort}->${this.guestPort}, secretProxy=${useSecretInjection}) for ${key}`,
     );
 
-    let createdName = sandboxName;
+    let runResult: MsbRunResult;
     try {
-      createdName = await this.msb.runSandbox({
+      runResult = await this.msb.runSandbox({
         name: sandboxName,
         image: this.options.image,
+        backend: this.backend,
         hostPort,
         guestPort: this.guestPort,
+        ephemeral: isCloud ? true : undefined,
         cpus: this.options.cpuLimit,
         memory: this.options.memoryLimit,
         labels,
@@ -556,19 +577,24 @@ export class MicrosandboxProvider implements ConversationTargetProvider {
         command: this.options.command ?? ["-c", DEFAULT_MSB_BOOTSTRAP_SCRIPT],
       });
     } catch (err) {
-      this.reservedPorts.delete(hostPort);
+      if (hostPort !== undefined) {
+        this.reservedPorts.delete(hostPort);
+      }
       throw err;
     }
     const tBoot = Date.now();
+    const createdName = runResult.name;
+    const effectiveHostPort = runResult.hostPort ?? hostPort;
+    const cloudHeaders = isCloud ? { "msb-skip-browser-warning": "1" } : undefined;
 
     try {
-      const httpUrl = `http://127.0.0.1:${hostPort}`;
-      const wsUrl = `ws://127.0.0.1:${hostPort}/ws`;
+      const { httpUrl, wsUrl } = runResult;
 
       await waitForDownstreamHealth(httpUrl, {
         timeoutMs: this.startTimeoutMs,
-        pollIntervalMs: 100,
+        pollIntervalMs: isCloud ? 250 : 100,
         token: capabilityToken,
+        headers: cloudHeaders,
         fetchImpl: this.options.fetchImpl,
       });
       const tHealth = Date.now();
@@ -579,6 +605,7 @@ export class MicrosandboxProvider implements ConversationTargetProvider {
       const client = new DownstreamClient({
         wsUrl,
         token: capabilityToken,
+        headers: cloudHeaders,
         reconnectBaseDelayMs: this.options.reconnectBaseDelayMs,
         reconnectMaxDelayMs: this.options.reconnectMaxDelayMs,
         maxReconnectAttempts: this.maxReconnectAttempts,
@@ -618,7 +645,8 @@ export class MicrosandboxProvider implements ConversationTargetProvider {
       sandbox = {
         id,
         sandboxName: createdName,
-        hostPort,
+        hostPort: effectiveHostPort,
+        serviceUrl: runResult.serviceUrl,
         wsUrl,
         client,
         target,
@@ -642,7 +670,9 @@ export class MicrosandboxProvider implements ConversationTargetProvider {
           guestLogs ? `\n[guest logs]\n${guestLogs}` : ""
         }`,
       );
-      this.reservedPorts.delete(hostPort);
+      if (hostPort !== undefined) {
+        this.reservedPorts.delete(hostPort);
+      }
       await this.msb.removeSandbox(createdName).catch(() => {});
       throw err;
     }
@@ -662,7 +692,9 @@ export class MicrosandboxProvider implements ConversationTargetProvider {
     sandbox.busy = false;
     this.notifyBusyChange();
     sandbox.client.close();
-    this.reservedPorts.delete(sandbox.hostPort);
+    if (sandbox.hostPort !== undefined) {
+      this.reservedPorts.delete(sandbox.hostPort);
+    }
     this.options.logger?.info(
       `Reaping microsandbox ${sandbox.id} (name=${sandbox.sandboxName}, reason=${reason})`,
     );

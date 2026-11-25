@@ -1,5 +1,6 @@
 import type { ProxyConfig } from "./config.ts";
 import { DownstreamClient } from "./downstream.ts";
+import { LETTABOX_CLOUD_STATUS_EMOJI, LETTABOX_STATUS_EMOJI } from "./machine-metadata.ts";
 import { type ActiveSandboxInfo, MicrosandboxProvider } from "./microsandbox-provider.ts";
 import type { MsbRunner } from "./msb-runner.ts";
 import { fetchAppServerInfo, waitForDownstreamHealth } from "./register.ts";
@@ -95,9 +96,15 @@ export class PassthroughProxy {
       "unknown";
     const cmdCount = (appServerInfo.supported_commands ?? appServerInfo.supportedCommands ?? [])
       .length;
+    const isCloudSandbox =
+      this.config.sandboxMode === "microsandbox" && this.config.sandbox.backend === "cloud";
+    const computeSuffix =
+      isCloudSandbox && this.config.sandbox.msbComputeType
+        ? `, computeType=${this.config.sandbox.msbComputeType}`
+        : "";
     const modeDesc =
       this.config.sandboxMode === "microsandbox"
-        ? `microsandbox mode (image=${this.config.sandbox.image}, secretProxy=${this.config.sandbox.msbSecretInjection})`
+        ? `microsandbox mode (backend=${this.config.sandbox.backend}, image=${this.config.sandbox.image}, secretProxy=${this.config.sandbox.msbSecretInjection}${computeSuffix})`
         : `${this.config.workerWsUrls.length} configured worker(s)`;
     this.logger.info(
       `Control-plane ready (letta-code ${version}, ${cmdCount} supported_commands, ${modeDesc})`,
@@ -140,9 +147,14 @@ export class PassthroughProxy {
     let provider: ConversationTargetProvider;
     if (this.config.sandboxMode === "microsandbox") {
       const msbProvider = new MicrosandboxProvider({
+        backend: this.config.sandbox.backend,
         image: this.config.sandbox.image,
         msbBin: this.config.sandbox.msbBin,
         msbHome: this.config.sandbox.msbHome,
+        msbApiKey: this.config.sandbox.msbApiKey,
+        msbApiUrl: this.config.sandbox.msbApiUrl,
+        msbProfile: this.config.sandbox.msbProfile,
+        msbComputeType: this.config.sandbox.msbComputeType,
         guestPort: this.config.sandbox.containerPort,
         memoryLimit: this.config.sandbox.memoryLimit,
         cpuLimit: this.config.sandbox.cpuLimit,
@@ -211,6 +223,7 @@ export class PassthroughProxy {
       listenerInstanceId: this.config.listenerInstanceId,
       connectionName: this.config.connectionName,
       appServerInfo,
+      statusEmoji: isCloudSandbox ? LETTABOX_CLOUD_STATUS_EMOJI : LETTABOX_STATUS_EMOJI,
       heartbeatIntervalMs: this.config.heartbeatIntervalMs,
       heartbeatMaxMissed: this.config.heartbeatMaxMissed,
       reconnectBaseDelayMs: this.config.reconnectBaseDelayMs,

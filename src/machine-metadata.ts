@@ -23,17 +23,26 @@ export interface MachineMetadataSources {
 }
 
 export const LETTABOX_STATUS_EMOJI = "📦";
+export const LETTABOX_CLOUD_STATUS_EMOJI = "☁️";
 
 const COLLECTION_TIMEOUT_MS = 2_000;
-let cachedMachineMetadata: Promise<MachineMetadata> | undefined;
+const cachedMachineMetadata = new Map<string, Promise<MachineMetadata>>();
 
 /** Cached for this process, including retries and reconnect registrations. */
-export function getMachineMetadata(): Promise<MachineMetadata> {
-  cachedMachineMetadata ??= collectMachineMetadata().catch(() => ({
-    model: `${LETTABOX_STATUS_EMOJI} Lettabox`,
-    architecture: process.arch,
-  }));
-  return cachedMachineMetadata;
+export function getMachineMetadata(
+  statusEmoji: string = LETTABOX_STATUS_EMOJI,
+): Promise<MachineMetadata> {
+  let cached = cachedMachineMetadata.get(statusEmoji);
+  if (!cached) {
+    cached = collectMachineMetadata(localSources(), COLLECTION_TIMEOUT_MS, statusEmoji).catch(
+      () => ({
+        model: `${statusEmoji} Lettabox`,
+        architecture: process.arch,
+      }),
+    );
+    cachedMachineMetadata.set(statusEmoji, cached);
+  }
+  return cached;
 }
 
 function localSources(): MachineMetadataSources {
@@ -120,16 +129,21 @@ const WINDOWS_QUERY = [
   "@{model=$computer.Model;osName=$os.Caption;osVersion=$os.Version;cpu=$cpu.Name;gpus=$gpus} | ConvertTo-Json -Compress",
 ].join("; ");
 
-function prefixModelWithEmoji(model: string | undefined, osName: string | undefined): string {
+function prefixModelWithEmoji(
+  model: string | undefined,
+  osName: string | undefined,
+  statusEmoji: string = LETTABOX_STATUS_EMOJI,
+): string {
   const base = model ?? osName ?? "Lettabox";
-  if (base.startsWith(LETTABOX_STATUS_EMOJI)) return base;
-  return `${LETTABOX_STATUS_EMOJI} ${base}`;
+  if (base.startsWith(statusEmoji)) return base;
+  return `${statusEmoji} ${base}`;
 }
 
 /** Best effort: unavailable fields are omitted and collection is bounded by timeoutMs. */
 export async function collectMachineMetadata(
   sources: MachineMetadataSources = localSources(),
   timeoutMs = COLLECTION_TIMEOUT_MS,
+  statusEmoji: string = LETTABOX_STATUS_EMOJI,
 ): Promise<MachineMetadata> {
   const result: MachineMetadata = {
     architecture: sources.architecture,
@@ -231,6 +245,6 @@ export async function collectMachineMetadata(
     controller.abort();
   }
 
-  result.model = prefixModelWithEmoji(result.model, result.osName);
+  result.model = prefixModelWithEmoji(result.model, result.osName, statusEmoji);
   return result;
 }

@@ -1,16 +1,18 @@
 [install]
 # Apply a seven-day cooldown to new package resolutions.
 minimumReleaseAge = 604800
-# Owner-approved 2026-11-20 for the SDK migration on main. Revisit and remove
-# these exact-version exclusions on 2026-11-25 once the normal cooldown admits them.
+# Owner-approved 2026-11-25 for Microsandbox Cloud support (RemoteContext, computeType,
+# and cloud fixes). Revisit and remove these exact-version exclusions on 2026-12-02 once
+# the normal cooldown admits them.
 minimumReleaseAgeExcludes = [
-  "microsandbox@0.7.16",
-  "@microsandbox/types@0.7.16",
-  "@superradcompany/microsandbox-darwin-arm64@0.7.16",
-  "@superradcompany/microsandbox-linux-arm64-gnu@0.7.16",
-  "@superradcompany/microsandbox-linux-x64-gnu@0.7.16",
-  "@superradcompany/microsandbox-win32-arm64-msvc@0.7.16",
-  "@superradcompany/microsandbox-win32-x64-msvc@0.7.16",
+  "microsandbox@0.8.2",
+  "@microsandbox/core@0.8.2",
+  "@microsandbox/types@0.8.2",
+  "@superradcompany/microsandbox-darwin-arm64@0.8.2",
+  "@superradcompany/microsandbox-linux-arm64-gnu@0.8.2",
+  "@superradcompany/microsandbox-linux-x64-gnu@0.8.2",
+  "@superradcompany/microsandbox-win32-arm64-msvc@0.8.2",
+  "@superradcompany/microsandbox-win32-x64-msvc@0.8.2",
 ]
 exact = true
 saveTextLockfile = true

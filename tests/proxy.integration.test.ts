@@ -278,6 +278,7 @@ function makeConfig(
     downstreamHttpUrl: downstream.httpUrl,
     sandboxMode: "static",
     sandbox: {
+      backend: "local",
       image: "ghcr.io/letta-ai/letta-code:latest",
       containerPort: 4500,
       idleTimeoutMs: 900_000,

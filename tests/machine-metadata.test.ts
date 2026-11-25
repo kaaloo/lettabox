@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   collectMachineMetadata,
+  LETTABOX_CLOUD_STATUS_EMOJI,
   LETTABOX_STATUS_EMOJI,
   type MachineMetadataSources,
 } from "../src/machine-metadata.ts";
@@ -38,6 +39,34 @@ describe("collectMachineMetadata", () => {
 
     expect(metadata).toEqual({
       model: `${LETTABOX_STATUS_EMOJI} MacBook Pro`,
+      osName: "macOS",
+      osVersion: "15.4",
+      architecture: "arm64",
+      cpu: "Apple M5 Pro",
+      memoryBytes: 24 * 1024 ** 3,
+      gpus: ["Apple M5 Pro"],
+    });
+  });
+
+  test("uses cloud emoji prefix in cloud mode while keeping host hardware metadata", async () => {
+    const metadata = await collectMachineMetadata(
+      makeSources({
+        platform: "darwin",
+        architecture: "arm64",
+        memoryBytes: 24 * 1024 ** 3,
+        run: async () =>
+          JSON.stringify({
+            SPHardwareDataType: [{ machine_name: "MacBook Pro", chip_type: "Apple M5 Pro" }],
+            SPSoftwareDataType: [{ os_version: "macOS 15.4 (24E248)" }],
+            SPDisplaysDataType: [{ sppci_model: "Apple M5 Pro" }],
+          }),
+      }),
+      2_000,
+      LETTABOX_CLOUD_STATUS_EMOJI,
+    );
+
+    expect(metadata).toEqual({
+      model: `${LETTABOX_CLOUD_STATUS_EMOJI} MacBook Pro`,
       osName: "macOS",
       osVersion: "15.4",
       architecture: "arm64",

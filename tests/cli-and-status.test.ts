@@ -99,6 +99,29 @@ describe("lettabox CLI argument parsing", () => {
     expect(parsed.lifecycleOutput).toBe("jsonl");
   });
 
+  test("parses cloud backend flags (--backend, --compute-type, --msb-profile, --msb-api-url)", () => {
+    const parsed = parseCliArgs(
+      [
+        "--backend",
+        "cloud",
+        "--compute-type",
+        "shared",
+        "--msb-profile",
+        "work",
+        "--msb-api-url",
+        "https://sandbox.example.com",
+      ],
+      {},
+    );
+    expect(parsed.envOverrides).toMatchObject({
+      SANDBOX_MODE: "microsandbox",
+      MSB_BACKEND: "cloud",
+      MSB_COMPUTE_TYPE: "shared",
+      MSB_PROFILE: "work",
+      MSB_API_URL: "https://sandbox.example.com",
+    });
+  });
+
   test("createLifecycleEmitter writes deduplicated lettaLifecycleProtocol v1 JSONL lines", () => {
     const lines: string[] = [];
     const emit = createLifecycleEmitter(true, (line) => lines.push(line));
@@ -142,6 +165,7 @@ describe("StatusServer", () => {
         name: "lettabox",
         connectionName: "my-mac",
         sandboxMode: "microsandbox",
+        sandboxBackend: "cloud",
         upstreamReady: true,
         uptimeMs: 1234,
         activeSandboxes: [
@@ -149,7 +173,7 @@ describe("StatusServer", () => {
             id: "msb-1",
             sandboxName: "letta-msb-abc",
             conversationId: "conv-1",
-            hostPort: 49155,
+            serviceUrl: "https://lb-0123456789abcdef.microsandbox.dev",
             busy: true,
             lastActivityAt: 1700000000,
           },
@@ -166,8 +190,18 @@ describe("StatusServer", () => {
     expect(statusRes.status).toBe(200);
     const body = (await statusRes.json()) as Record<string, unknown>;
     expect(body.name).toBe("lettabox");
+    expect(body.sandboxBackend).toBe("cloud");
     expect(body.upstreamReady).toBe(true);
-    expect((body.activeSandboxes as unknown[]).length).toBe(1);
+    expect(body.activeSandboxes).toEqual([
+      {
+        id: "msb-1",
+        sandboxName: "letta-msb-abc",
+        conversationId: "conv-1",
+        serviceUrl: "https://lb-0123456789abcdef.microsandbox.dev",
+        busy: true,
+        lastActivityAt: 1700000000,
+      },
+    ]);
 
     const notFound = await fetch(`${srv.url}/nope`);
     expect(notFound.status).toBe(404);

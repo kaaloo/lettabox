@@ -37,6 +37,11 @@ Usage:
 Options:
   --name, --computer-name <name>  Environment name in chat.letta.com (default: lettabox-<hostname>)
   --mode <msb|static>             Sandbox mode (default: msb, or static if WORKER_URLS is set)
+  --backend <local|cloud>         Microsandbox backend (default: local; alias: remote)
+  --compute-type <standard|shared>
+                                  Microsandbox Cloud compute tier (cloud backend only)
+  --msb-profile <name>            Named Microsandbox profile from ~/.microsandbox/config.json
+  --msb-api-url <url>             Override Microsandbox Cloud API endpoint
   --image <oci-image>             OCI image for microVMs (default: ghcr.io/letta-ai/letta-code:latest)
   --memory <size>                 Memory limit per microVM (default: 2G)
   --cpus <count>                  vCPU limit per microVM (default: 2)
@@ -52,6 +57,11 @@ Options:
 
 Environment:
   LETTA_API_KEY                   Letta Cloud API key (or auto-loaded from ~/.letta/settings.json)
+  MSB_BACKEND                     Microsandbox backend: local or cloud/remote (default: local)
+  MSB_API_KEY                     Microsandbox Cloud API key (required for cloud unless MSB_PROFILE is set)
+  MSB_API_URL                     Optional Microsandbox Cloud API URL override
+  MSB_PROFILE                     Optional named Microsandbox profile from ~/.microsandbox/config.json
+  MSB_COMPUTE_TYPE                Optional Microsandbox Cloud compute tier: standard or shared
   MSB_HOME                        Microsandbox home (default: ~/.lettabox/microsandbox)
 `;
 
@@ -122,6 +132,18 @@ export function parseCliArgs(
         break;
       case "--mode":
         envOverrides.SANDBOX_MODE = nextValue();
+        break;
+      case "--backend":
+        envOverrides.MSB_BACKEND = nextValue();
+        break;
+      case "--compute-type":
+        envOverrides.MSB_COMPUTE_TYPE = nextValue();
+        break;
+      case "--msb-profile":
+        envOverrides.MSB_PROFILE = nextValue();
+        break;
+      case "--msb-api-url":
+        envOverrides.MSB_API_URL = nextValue();
         break;
       case "--image":
         envOverrides.SANDBOX_IMAGE = nextValue();
@@ -351,6 +373,8 @@ export async function runCli(
           name: "lettabox",
           connectionName: config.connectionName,
           sandboxMode: config.sandboxMode,
+          sandboxBackend:
+            config.sandboxMode === "microsandbox" ? config.sandbox.backend : undefined,
           upstreamReady,
           uptimeMs: Date.now() - startedAt,
           activeSandboxes: activeProxy.listActiveSandboxes(),
