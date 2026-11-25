@@ -944,6 +944,7 @@ describe("SdkMsbRunner detached command launch and diagnostics", () => {
         events.push(`create:${spec.name}`);
         return {
           name: spec.name,
+          exec: async () => ({ code: 0, success: true, stdout: () => "", stderr: () => "" }),
           execDetached: async (cmd, args) => {
             events.push("execDetached");
             execCalls.push({ cmd, args: args ? Array.from(args) : [] });
@@ -1052,6 +1053,7 @@ describe("SdkMsbRunner detached command launch and diagnostics", () => {
     const sandboxOps: SdkSandboxOps = {
       create: async (spec) => ({
         name: spec.name,
+        exec: async () => ({ code: 0, success: true, stdout: () => "", stderr: () => "" }),
         execDetached: async () => {
           throw new Error("execDetached boom");
         },
@@ -1408,7 +1410,7 @@ describe("Microsandbox Cloud backend", () => {
     );
   });
 
-  test("buildSdkSandbox in cloud mode sets ephemeral=true, omits portBind/replace, and preserves secret injection", async () => {
+  test("buildSdkSandbox in cloud mode sets ephemeral=true, omits portBind/replace/entrypoint/cmd, and preserves secret injection", async () => {
     const config = JSON.parse(
       JSON.stringify(
         await buildSdkSandbox({
@@ -1435,6 +1437,8 @@ describe("Microsandbox Cloud backend", () => {
     expect(config.lifecycle).toMatchObject({ ephemeral: true });
     expect(config.network.ports).toEqual([]);
     expect(config.patches).toEqual([]);
+    expect(config.runtime.entrypoint).toBeNull();
+    expect(config.runtime.cmd).toBeNull();
     expect(config.resources).toMatchObject({ cpus: 2, memoryMib: 2048 });
     expect(config.network.secrets.secrets).toHaveLength(1);
     expect(config.network.secrets.secrets[0]).toMatchObject({
@@ -1557,9 +1561,14 @@ describe("Microsandbox Cloud backend", () => {
         events.push(`create:${spec.name}`);
         return {
           name: spec.name,
+          exec: async (cmd, args) => {
+            const argv = args ? Array.from(args) : [];
+            events.push(`exec:${cmd}:${argv[2] ?? ""}`);
+            expect(argv.slice(3)).toEqual(["/bin/sh", "-c", "exec letta server"]);
+            return { code: 0, success: true, stdout: () => "", stderr: () => "" };
+          },
           execDetached: async () => {
-            events.push("execDetached");
-            return { id: "job-cloud-1" };
+            throw new Error("execDetached is unsupported on cloud");
           },
           detach: async () => {
             events.push("detach");
@@ -1575,6 +1584,12 @@ describe("Microsandbox Cloud backend", () => {
           destroyOpts.push(opts);
           events.push(`destroy:${name}`);
         },
+        exec: async (cmd, args) => ({
+          code: 0,
+          success: true,
+          stdout: () => `${cmd} ${Array.from(args ?? []).join(" ")} -> letta listening`,
+          stderr: () => "",
+        }),
         listJobsWith: async () => ({ items: [] }),
         getJob: async () => ({ logs: async () => [] }),
         logs: async () => [],
@@ -1649,12 +1664,15 @@ describe("Microsandbox Cloud backend", () => {
       { slug: "lb-0123456789abcdef", sandboxName: "letta-msb-cloud-run", guestPort: 4500 },
     ]);
 
+    const cloudLogs = await runner.readSandboxLogs("letta-msb-cloud-run");
+    expect(cloudLogs).toContain("/tmp/letta-server.log");
+
     await runner.removeSandbox("letta-msb-cloud-run");
     expect(removedServices).toEqual(["lb-0123456789abcdef"]);
     expect(destroyOpts).toEqual([undefined]);
     expect(events).toEqual([
       "create:letta-msb-cloud-run",
-      "execDetached",
+      "exec:/bin/sh:lettabox-launch",
       "detach",
       "service-create:lb-0123456789abcdef",
       "service-remove:lb-0123456789abcdef",
@@ -1673,7 +1691,10 @@ describe("Microsandbox Cloud backend", () => {
       sandboxOps: {
         create: async (spec) => ({
           name: spec.name,
-          execDetached: async () => ({ id: "job-1" }),
+          exec: async () => ({ code: 0, success: true, stdout: () => "", stderr: () => "" }),
+          execDetached: async () => {
+            throw new Error("execDetached is unsupported on cloud");
+          },
           detach: async () => {},
           destroy: async () => {
             destroyedOnCreateFail = true;
@@ -1716,7 +1737,10 @@ describe("Microsandbox Cloud backend", () => {
       sandboxOps: {
         create: async (spec) => ({
           name: spec.name,
-          execDetached: async () => ({ id: "job-2" }),
+          exec: async () => ({ code: 0, success: true, stdout: () => "", stderr: () => "" }),
+          execDetached: async () => {
+            throw new Error("execDetached is unsupported on cloud");
+          },
           detach: async () => {},
           destroy: async () => {},
         }),
@@ -1752,6 +1776,58 @@ describe("Microsandbox Cloud backend", () => {
     });
     await notFoundServiceRunner.removeSandbox("letta-msb-svc-gone");
     expect(destroyedOnRemove).toBe(true);
+  });
+
+  test("SdkMsbRunner cloud mode destroys sandbox if guest server launch exec fails", async () => {
+    let destroyed = false;
+    const runner = new SdkMsbRunner({
+      backend: "cloud",
+      msbApiKey: "msb_test_key",
+      env: {},
+      sandboxOps: {
+        create: async (spec) => ({
+          name: spec.name,
+          exec: async () => ({
+            code: 127,
+            success: false,
+            stdout: () => "",
+            stderr: () => "letta: command not found",
+          }),
+          execDetached: async () => {
+            throw new Error("execDetached is unsupported on cloud");
+          },
+          detach: async () => {},
+          destroy: async () => {
+            destroyed = true;
+          },
+        }),
+        get: async () => {
+          throw new Error("unused");
+        },
+      },
+      serviceOps: {
+        create: async () => {
+          throw new Error("should not create service after launch failure");
+        },
+        get: async () => {
+          throw new Error("unused");
+        },
+      },
+      logger: silentLogger,
+    });
+
+    await expect(
+      runner.runSandbox({
+        name: "letta-msb-exec-fail",
+        image: "ghcr.io/letta-ai/letta-code:latest",
+        guestPort: 4500,
+        labels: {},
+        env: {},
+        entrypoint: "/bin/sh",
+        command: ["-c", "exec letta server"],
+      }),
+    ).rejects.toThrow("(exit 127): letta: command not found");
+    expect(destroyed).toBe(true);
   });
 
   test("MicrosandboxProvider cloud mode skips host port allocation, sends capability token + skip-warning header, and exposes serviceUrl", async () => {

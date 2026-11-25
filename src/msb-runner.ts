@@ -142,8 +142,16 @@ export interface SdkImageOps {
   ) => Promise<void>;
 }
 
+export interface SdkExecOutput {
+  readonly code: number;
+  readonly success: boolean;
+  stdout(): string;
+  stderr(): string;
+}
+
 export interface SdkSandboxInstance {
   readonly name: string;
+  exec(cmd: string, args?: Iterable<string>): Promise<SdkExecOutput>;
   execDetached(cmd: string, args?: Iterable<string>): Promise<{ id: string }>;
   detach(): Promise<void>;
   destroy(options?: { force?: boolean }): Promise<void>;
@@ -156,6 +164,7 @@ export interface SdkSandboxJobListBuilder {
 
 export interface SdkSandboxHandle {
   destroy(options?: { force?: boolean }): Promise<void>;
+  exec?(cmd: string, args?: Iterable<string>): Promise<SdkExecOutput>;
   listJobsWith(configure: (b: SdkSandboxJobListBuilder) => SdkSandboxJobListBuilder): Promise<{
     items: ReadonlyArray<{
       id: string;
@@ -216,6 +225,22 @@ export interface SdkMsbRunnerOptions {
   serviceOps?: SdkServiceOps;
   makeServiceSlug?: () => string;
   logger?: SdkMsbRunnerLogger;
+}
+
+export const CLOUD_SERVER_LOG_PATH = "/tmp/letta-server.log";
+
+export function buildCloudDetachedLaunch(launch: { cmd: string; args: string[] }): {
+  cmd: string;
+  args: string[];
+} {
+  // Microsandbox Cloud rejects execDetached (managed background jobs are local-only).
+  // Start the server in a new session with redirected stdio via positional parameters
+  // so exec() returns immediately without shell-escaping hazards.
+  const wrapper = `if command -v setsid >/dev/null 2>&1; then setsid "$@" </dev/null >${CLOUD_SERVER_LOG_PATH} 2>&1 & else nohup "$@" </dev/null >${CLOUD_SERVER_LOG_PATH} 2>&1 & fi`;
+  return {
+    cmd: "/bin/sh",
+    args: ["-c", wrapper, "lettabox-launch", launch.cmd, ...launch.args],
+  };
 }
 
 export function makeMsbServiceSlug(): string {
@@ -303,11 +328,13 @@ export function buildSdkSandbox(
     });
   }
 
-  if (spec.entrypoint && spec.entrypoint.trim().length > 0) {
-    builder.entrypoint([spec.entrypoint.trim()]);
-  }
-  if (spec.command && spec.command.length > 0) {
-    builder.cmd(spec.command);
+  if (!isCloud) {
+    if (spec.entrypoint && spec.entrypoint.trim().length > 0) {
+      builder.entrypoint([spec.entrypoint.trim()]);
+    }
+    if (spec.command && spec.command.length > 0) {
+      builder.cmd(spec.command);
+    }
   }
   if (spec.patches && spec.patches.length > 0) {
     const patches = spec.patches;
@@ -535,6 +562,7 @@ export class SdkMsbRunner implements MsbRunner {
       hostPort: undefined,
       ephemeral: spec.ephemeral ?? true,
     };
+    const tCreateStart = Date.now();
     let sandbox: SdkSandboxInstance;
     try {
       sandbox = await this.sandboxOps.create(effectiveSpec);
@@ -555,17 +583,30 @@ export class SdkMsbRunner implements MsbRunner {
       }
       throw error;
     }
+    this.logger?.info(
+      `Cloud microsandbox ${sandbox.name} created (${Date.now() - tCreateStart}ms), launching guest server...`,
+    );
     const launch = resolveMsbLaunchCommand(effectiveSpec);
     let createdService: SdkServiceInstance | null = null;
     try {
       if (launch) {
-        await sandbox.execDetached(launch.cmd, launch.args);
+        const detached = buildCloudDetachedLaunch(launch);
+        const output = await sandbox.exec(detached.cmd, detached.args);
+        if (!output.success) {
+          const detail = (output.stderr() || output.stdout()).trim();
+          throw new Error(
+            `Failed to launch guest server in cloud microsandbox ${sandbox.name} (exit ${output.code})${detail ? `: ${detail}` : ""}`,
+          );
+        }
       }
       await sandbox.detach();
 
       const slug = this.makeServiceSlug();
       createdService = await this.serviceOps.create(slug, sandbox.name, effectiveSpec.guestPort);
       this.sandboxServices.set(sandbox.name, createdService.slug);
+      this.logger?.info(
+        `Cloud microsandbox ${sandbox.name} service ready at ${createdService.url} (slug=${createdService.slug})`,
+      );
 
       const { httpUrl, wsUrl } = serviceUrlToEndpoints(createdService.url);
       return {
@@ -642,39 +683,49 @@ export class SdkMsbRunner implements MsbRunner {
       const handle = await this.sandboxOps.get(name);
       const parts: string[] = [];
 
-      try {
-        const jobs = await handle.listJobsWith((b) => b.all(true).limit(5));
-        for (const info of jobs.items) {
-          const statusParts = [`job=${info.id}`, `state=${info.state}`];
-          if (info.exitCode !== null) statusParts.push(`exitCode=${info.exitCode}`);
-          if (info.error) statusParts.push(`error=${info.error}`);
-          parts.push(`[${statusParts.join(" ")}]`);
+      if (this.backend === "cloud" && handle.exec) {
+        try {
+          const out = await handle.exec("tail", ["-n", "40", CLOUD_SERVER_LOG_PATH]);
+          const text = (out.stdout() || out.stderr()).trim();
+          if (text) parts.push(text);
+        } catch {
+          // ignore cloud guest log read failures
+        }
+      } else {
+        try {
+          const jobs = await handle.listJobsWith((b) => b.all(true).limit(5));
+          for (const info of jobs.items) {
+            const statusParts = [`job=${info.id}`, `state=${info.state}`];
+            if (info.exitCode !== null) statusParts.push(`exitCode=${info.exitCode}`);
+            if (info.error) statusParts.push(`error=${info.error}`);
+            parts.push(`[${statusParts.join(" ")}]`);
+            try {
+              const job = await handle.getJob(info.id);
+              const entries = await job.logs({ tail: 40 });
+              const text = entries
+                .map((entry) => entry.data.toString("utf8"))
+                .join("")
+                .trim();
+              if (text) parts.push(text);
+            } catch {
+              // ignore individual job log read failures
+            }
+          }
+        } catch {
+          // fall through to sandbox-level logs
+        }
+
+        if (parts.length === 0) {
           try {
-            const job = await handle.getJob(info.id);
-            const entries = await job.logs({ tail: 40 });
+            const entries = await handle.logs({ tail: 40, sources: ["all"] });
             const text = entries
-              .map((entry) => entry.data.toString("utf8"))
+              .map((entry) => entry.text())
               .join("")
               .trim();
             if (text) parts.push(text);
           } catch {
-            // ignore individual job log read failures
+            // ignore
           }
-        }
-      } catch {
-        // fall through to sandbox-level logs
-      }
-
-      if (parts.length === 0) {
-        try {
-          const entries = await handle.logs({ tail: 40, sources: ["all"] });
-          const text = entries
-            .map((entry) => entry.text())
-            .join("")
-            .trim();
-          if (text) parts.push(text);
-        } catch {
-          // ignore
         }
       }
 
