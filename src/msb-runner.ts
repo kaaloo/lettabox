@@ -583,8 +583,9 @@ export class SdkMsbRunner implements MsbRunner {
       }
       throw error;
     }
+    const tCreateDone = Date.now();
     this.logger?.info(
-      `Cloud microsandbox ${sandbox.name} created (${Date.now() - tCreateStart}ms), launching guest server...`,
+      `Cloud microsandbox ${sandbox.name} created (${tCreateDone - tCreateStart}ms), launching guest server...`,
     );
     const launch = resolveMsbLaunchCommand(effectiveSpec);
     let createdService: SdkServiceInstance | null = null;
@@ -600,12 +601,14 @@ export class SdkMsbRunner implements MsbRunner {
         }
       }
       await sandbox.detach();
+      const tExecDone = Date.now();
 
       const slug = this.makeServiceSlug();
       createdService = await this.serviceOps.create(slug, sandbox.name, effectiveSpec.guestPort);
       this.sandboxServices.set(sandbox.name, createdService.slug);
+      const tServiceDone = Date.now();
       this.logger?.info(
-        `Cloud microsandbox ${sandbox.name} service ready at ${createdService.url} (slug=${createdService.slug})`,
+        `Cloud microsandbox ${sandbox.name} service ready at ${createdService.url} (slug=${createdService.slug}, exec=${tExecDone - tCreateDone}ms, service=${tServiceDone - tExecDone}ms)`,
       );
 
       const { httpUrl, wsUrl } = serviceUrlToEndpoints(createdService.url);

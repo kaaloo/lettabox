@@ -19,12 +19,54 @@ export interface Logger {
   debug: (msg: string) => void;
 }
 
-const defaultLogger: Logger = {
-  info: (msg) => console.log(`[lettabox] ${msg}`),
-  warn: (msg) => console.warn(`[lettabox] WARN: ${msg}`),
-  error: (msg) => console.error(`[lettabox] ERROR: ${msg}`),
-  debug: (msg) => console.log(`[lettabox] DEBUG: ${msg}`),
-};
+export function formatLogLine(
+  msg: string,
+  options: { prefix?: string; level?: "WARN" | "ERROR" | "DEBUG"; now?: () => Date } = {},
+): string {
+  const ts = (options.now ?? (() => new Date()))().toISOString();
+  const prefix = options.prefix ?? "lettabox";
+  const level = options.level ? `${options.level}: ` : "";
+  return `${ts} [${prefix}] ${level}${msg}`;
+}
+
+export function createConsoleLogger(
+  options: {
+    stderrOnly?: boolean;
+    now?: () => Date;
+    writeStdout?: (line: string) => void;
+    writeStderr?: (line: string) => void;
+    writeWarn?: (line: string) => void;
+  } = {},
+): Logger {
+  const stderrOnly = options.stderrOnly ?? false;
+  const now = options.now;
+  const writeStdout = options.writeStdout ?? ((line) => console.log(line));
+  const writeStderr = options.writeStderr ?? ((line) => console.error(line));
+  const writeWarn = options.writeWarn ?? ((line) => console.warn(line));
+
+  return {
+    info: (msg) => {
+      const line = formatLogLine(msg, { now });
+      if (stderrOnly) writeStderr(line);
+      else writeStdout(line);
+    },
+    warn: (msg) => {
+      const line = formatLogLine(msg, { level: "WARN", now });
+      if (stderrOnly) writeStderr(line);
+      else writeWarn(line);
+    },
+    error: (msg) => {
+      writeStderr(formatLogLine(msg, { level: "ERROR", now }));
+    },
+    debug: (msg) => {
+      const line = formatLogLine(msg, { level: "DEBUG", now });
+      if (stderrOnly) writeStderr(line);
+      else writeStdout(line);
+    },
+  };
+}
+
+const defaultLogger: Logger = createConsoleLogger();
 
 export interface PassthroughProxyOptions {
   config: ProxyConfig;

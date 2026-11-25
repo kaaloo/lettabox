@@ -6,7 +6,7 @@ import {
   resolveLettaCommand,
   spawnManagedControlPlane,
 } from "./control-plane.ts";
-import { type Logger, MultiplexerProxy } from "./proxy.ts";
+import { createConsoleLogger, formatLogLine, type Logger, MultiplexerProxy } from "./proxy.ts";
 import { type StatusServer, startStatusServer } from "./status-server.ts";
 
 export type LifecycleState =
@@ -245,17 +245,8 @@ export async function runCli(
 
   const jsonlMode = parsed.lifecycleOutput === "jsonl";
   const emitLifecycle = createLifecycleEmitter(jsonlMode);
-  const logInfo = (msg: string) =>
-    jsonlMode ? console.error(`[lettabox] ${msg}`) : console.log(`[lettabox] ${msg}`);
-
-  const proxyLogger: Logger | undefined = jsonlMode
-    ? {
-        info: (msg) => console.error(`[lettabox] ${msg}`),
-        warn: (msg) => console.error(`[lettabox] WARN: ${msg}`),
-        error: (msg) => console.error(`[lettabox] ERROR: ${msg}`),
-        debug: (msg) => console.error(`[lettabox] DEBUG: ${msg}`),
-      }
-    : undefined;
+  const proxyLogger: Logger = createConsoleLogger({ stderrOnly: jsonlMode });
+  const logInfo = (msg: string) => proxyLogger.info(msg);
 
   const mergedEnv: Record<string, string | undefined> = {
     ...baseEnv,
@@ -322,12 +313,12 @@ export async function runCli(
         lettaServerUrl: preConfig.lettaServerUrl,
         onStderr: preConfig.debugFrames
           ? (line) => {
-              console.error(`[lettabox:control-plane] ${line}`);
+              console.error(formatLogLine(line, { prefix: "lettabox:control-plane" }));
             }
           : undefined,
         onUnexpectedExit: (exitCode) => {
-          console.error(
-            `[lettabox] Managed control-plane exited unexpectedly (code ${exitCode}), shutting down...`,
+          proxyLogger.error(
+            `Managed control-plane exited unexpectedly (code ${exitCode}), shutting down...`,
           );
           void cleanupAndExit(1);
         },
@@ -394,14 +385,14 @@ export async function runCli(
 
     await activeProxy.start();
   } catch (err) {
-    console.error("[lettabox] Fatal error:", err);
+    console.error(formatLogLine("Fatal error:", { level: "ERROR" }), err);
     await cleanupAndExit(1);
   }
 }
 
 if (import.meta.main) {
   runCli().catch((err) => {
-    console.error("[lettabox] Fatal error:", err);
+    console.error(formatLogLine("Fatal error:", { level: "ERROR" }), err);
     process.exit(1);
   });
 }
