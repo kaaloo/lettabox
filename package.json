@@ -24,7 +24,14 @@
   },
   "dependencies": {
     "@letta-ai/letta-code": "0.34.61",
-    "microsandbox": "0.7.16"
+    "microsandbox": "0.8.2"
+  },
+  "optionalDependencies": {
+    "@superradcompany/microsandbox-darwin-arm64": "0.8.2",
+    "@superradcompany/microsandbox-linux-arm64-gnu": "0.8.2",
+    "@superradcompany/microsandbox-linux-x64-gnu": "0.8.2",
+    "@superradcompany/microsandbox-win32-arm64-msvc": "0.8.2",
+    "@superradcompany/microsandbox-win32-x64-msvc": "0.8.2"
   },
   "overrides": {
     "glob": "14.0.6",

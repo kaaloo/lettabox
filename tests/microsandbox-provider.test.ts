@@ -1,11 +1,13 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import type { Server, ServerWebSocket } from "bun";
+import { CloudHttpError, RuntimeError, ServiceNotFoundError } from "microsandbox";
 import { deriveListenerInstanceId, loadConfig, type ProxyConfig } from "../src/config.ts";
 import { MicrosandboxProvider } from "../src/microsandbox-provider.ts";
 import {
   buildSdkSandbox,
   type MsbRunner,
   type MsbRunSpec,
+  makeMsbServiceSlug,
   parseMsbCpuCount,
   parseMsbMemoryMiB,
   resolveMsbLaunchCommand,
@@ -14,6 +16,8 @@ import {
   SdkMsbRunner,
   type SdkRuntimeOps,
   type SdkSandboxOps,
+  type SdkServiceOps,
+  serviceUrlToEndpoints,
 } from "../src/msb-runner.ts";
 import { MultiplexerProxy } from "../src/proxy.ts";
 
@@ -22,6 +26,8 @@ interface MockMsbInstance {
   spec: MsbRunSpec;
   server: Server<{ token: string }>;
   received: string[];
+  healthHeaders: Record<string, string | null>[];
+  wsHeaders: Record<string, string | null>[];
   socket: ServerWebSocket<{ token: string }> | null;
   removed: boolean;
 }
@@ -41,12 +47,16 @@ function createMockMsbRunner(options: { spawnDelayMs?: number; failHealth?: bool
 
       let instance!: MockMsbInstance;
       const server = Bun.serve<{ token: string }>({
-        port: spec.hostPort,
+        port: spec.hostPort ?? 0,
         hostname: "127.0.0.1",
         fetch(req, srv) {
           const url = new URL(req.url);
           const auth = req.headers.get("authorization");
           if (url.pathname === "/healthz") {
+            instance.healthHeaders.push({
+              authorization: auth,
+              "msb-skip-browser-warning": req.headers.get("msb-skip-browser-warning"),
+            });
             if (options.failHealth) {
               return new Response("unhealthy", { status: 503 });
             }
@@ -56,6 +66,10 @@ function createMockMsbRunner(options: { spawnDelayMs?: number; failHealth?: bool
             return new Response("ok", { status: 200 });
           }
           if (url.pathname === "/ws") {
+            instance.wsHeaders.push({
+              authorization: auth,
+              "msb-skip-browser-warning": req.headers.get("msb-skip-browser-warning"),
+            });
             if (expectedToken && auth !== `Bearer ${expectedToken}`) {
               return new Response("unauthorized", { status: 401 });
             }
@@ -78,16 +92,36 @@ function createMockMsbRunner(options: { spawnDelayMs?: number; failHealth?: bool
         },
       });
 
+      const boundPort = server.port ?? spec.hostPort ?? 0;
+      const httpUrl = `http://127.0.0.1:${boundPort}`;
+      const wsUrl = `ws://127.0.0.1:${boundPort}/ws`;
+
       instance = {
         name: spec.name,
         spec,
         server,
         received: [],
+        healthHeaders: [],
+        wsHeaders: [],
         socket: null,
         removed: false,
       };
       sandboxes.set(spec.name, instance);
-      return spec.name;
+      if (spec.backend === "cloud") {
+        return {
+          name: spec.name,
+          httpUrl,
+          wsUrl,
+          serviceSlug: `lb-${spec.name.slice(-12)}`,
+          serviceUrl: httpUrl,
+        };
+      }
+      return {
+        name: spec.name,
+        httpUrl,
+        wsUrl,
+        hostPort: boundPort,
+      };
     },
 
     async removeSandbox(name) {
@@ -432,6 +466,7 @@ describe("MicrosandboxProvider lifecycle", () => {
       downstreamHttpUrl: `http://127.0.0.1:${cpServer.port}`,
       sandboxMode: "microsandbox",
       sandbox: {
+        backend: "local",
         image: "ghcr.io/letta-ai/letta-code:latest",
         containerPort: 4500,
         idleTimeoutMs: 60_000,
@@ -909,6 +944,7 @@ describe("SdkMsbRunner detached command launch and diagnostics", () => {
         events.push(`create:${spec.name}`);
         return {
           name: spec.name,
+          exec: async () => ({ code: 0, success: true, stdout: () => "", stderr: () => "" }),
           execDetached: async (cmd, args) => {
             events.push("execDetached");
             execCalls.push({ cmd, args: args ? Array.from(args) : [] });
@@ -938,7 +974,7 @@ describe("SdkMsbRunner detached command launch and diagnostics", () => {
       logger: silentLogger,
     });
 
-    const createdName = await runner.runSandbox({
+    const runResult = await runner.runSandbox({
       name: "letta-msb-test-1",
       image: "ghcr.io/letta-ai/letta-code:latest",
       hostPort: 20711,
@@ -958,7 +994,12 @@ describe("SdkMsbRunner detached command launch and diagnostics", () => {
       ],
     });
 
-    expect(createdName).toBe("letta-msb-test-1");
+    expect(runResult).toEqual({
+      name: "letta-msb-test-1",
+      httpUrl: "http://127.0.0.1:20711",
+      wsUrl: "ws://127.0.0.1:20711/ws",
+      hostPort: 20711,
+    });
     expect(events).toEqual(["create:letta-msb-test-1", "execDetached", "detach"]);
     expect(execCalls).toEqual([{ cmd: "/bin/sh", args: ["-c", "exec letta server"] }]);
     expect(createdSpecs[0]?.patches).toEqual([
@@ -1012,6 +1053,7 @@ describe("SdkMsbRunner detached command launch and diagnostics", () => {
     const sandboxOps: SdkSandboxOps = {
       create: async (spec) => ({
         name: spec.name,
+        exec: async () => ({ code: 0, success: true, stdout: () => "", stderr: () => "" }),
         execDetached: async () => {
           throw new Error("execDetached boom");
         },
@@ -1346,5 +1388,726 @@ describe("SdkMsbRunner detached command launch and diagnostics", () => {
     const target = await provider.acquireForConversation("conv-fresh");
     expect(target.id).not.toBe(`msb-${standby.name.slice("letta-msb-".length)}`);
     expect(mockMsb.removedNames).toContain(standby.name);
+  });
+});
+
+describe("Microsandbox Cloud backend", () => {
+  test("makeMsbServiceSlug generates valid Microsandbox Service slugs and serviceUrlToEndpoints maps https/http to wss/ws", () => {
+    const slug = makeMsbServiceSlug();
+    expect(slug).toMatch(/^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9])){1,61}[a-z0-9]$/);
+    expect(slug.startsWith("lb-")).toBe(true);
+
+    expect(serviceUrlToEndpoints("https://lb-0123456789abcdef.microsandbox.dev/")).toEqual({
+      httpUrl: "https://lb-0123456789abcdef.microsandbox.dev",
+      wsUrl: "wss://lb-0123456789abcdef.microsandbox.dev/ws",
+    });
+    expect(serviceUrlToEndpoints("http://127.0.0.1:8787")).toEqual({
+      httpUrl: "http://127.0.0.1:8787",
+      wsUrl: "ws://127.0.0.1:8787/ws",
+    });
+    expect(() => serviceUrlToEndpoints("ftp://example.com")).toThrow(
+      "Unsupported Microsandbox Service URL protocol",
+    );
+  });
+
+  test("buildSdkSandbox in cloud mode sets ephemeral=true, omits portBind/replace/entrypoint/cmd, and preserves secret injection", async () => {
+    const config = JSON.parse(
+      JSON.stringify(
+        await buildSdkSandbox({
+          name: "letta-msb-cloud-1",
+          image: "ghcr.io/letta-ai/letta-code:latest",
+          backend: "cloud",
+          guestPort: 4500,
+          cpus: "2",
+          memory: "2G",
+          labels: { "letta-sandbox.managed": "true" },
+          env: { LETTA_WS_TOKEN: "cap-cloud-1" },
+          secret: {
+            envName: "LETTA_API_KEY",
+            value: "sk-let-CLOUD-SECRET",
+            allowedHosts: ["api.letta.com"],
+            headers: ["Authorization"],
+          },
+          entrypoint: "/bin/sh",
+          command: ["-c", "echo hi"],
+        }).build(),
+      ),
+    );
+
+    expect(config.lifecycle).toMatchObject({ ephemeral: true });
+    expect(config.network.ports).toEqual([]);
+    expect(config.patches).toEqual([]);
+    expect(config.runtime.entrypoint).toBeNull();
+    expect(config.runtime.cmd).toBeNull();
+    expect(config.resources).toMatchObject({ cpus: 2, memoryMib: 2048 });
+    expect(config.network.secrets.secrets).toHaveLength(1);
+    expect(config.network.secrets.secrets[0]).toMatchObject({
+      envVar: "LETTA_API_KEY",
+      allowedHosts: [{ exact: "api.letta.com" }],
+    });
+  });
+
+  test("loadConfig validates cloud backend settings, defaults warmPoolSize=0, and refuses silent fallback", () => {
+    // MSB_API_KEY alone does not implicitly enable cloud mode
+    const localWithKey = loadConfig({
+      LETTA_API_KEY: "test-key",
+      LETTA_DEVICE_ID: "dev-1",
+      SANDBOX_MODE: "microsandbox",
+      MSB_API_KEY: "msb_live_key",
+    });
+    expect(localWithKey.sandbox.backend).toBe("local");
+    expect(localWithKey.sandbox.warmPoolSize).toBe(1);
+    expect(localWithKey.sandbox.memoryLimit).toBe("2G");
+    expect(localWithKey.sandbox.cpuLimit).toBe("2");
+
+    // Explicit MSB_BACKEND=cloud with MSB_API_KEY
+    const cloudCfg = loadConfig({
+      LETTA_API_KEY: "test-key",
+      LETTA_DEVICE_ID: "dev-1",
+      SANDBOX_MODE: "microsandbox",
+      MSB_BACKEND: "cloud",
+      MSB_API_KEY: "msb_live_key",
+      MSB_API_URL: "https://sandbox.example.com",
+      MSB_COMPUTE_TYPE: "shared",
+    });
+    expect(cloudCfg.sandbox.backend).toBe("cloud");
+    expect(cloudCfg.sandbox.warmPoolSize).toBe(0);
+    expect(cloudCfg.sandbox.memoryLimit).toBe("1G");
+    expect(cloudCfg.sandbox.cpuLimit).toBe("1");
+    expect(cloudCfg.sandbox.msbApiKey).toBe("msb_live_key");
+    expect(cloudCfg.sandbox.msbApiUrl).toBe("https://sandbox.example.com");
+    expect(cloudCfg.sandbox.msbComputeType).toBe("shared");
+
+    // Alias MSB_BACKEND=remote with MSB_PROFILE and explicit warm pool override
+    const remoteProfileCfg = loadConfig({
+      LETTA_API_KEY: "test-key",
+      LETTA_DEVICE_ID: "dev-1",
+      SANDBOX_MODE: "msb",
+      MSB_BACKEND: "remote",
+      MSB_PROFILE: "work",
+      SANDBOX_WARM_POOL_SIZE: "2",
+    });
+    expect(remoteProfileCfg.sandbox.backend).toBe("cloud");
+    expect(remoteProfileCfg.sandbox.msbProfile).toBe("work");
+    expect(remoteProfileCfg.sandbox.warmPoolSize).toBe(2);
+
+    // Missing both MSB_API_KEY and MSB_PROFILE fails fast without falling back to local
+    expect(() =>
+      loadConfig({
+        LETTA_API_KEY: "test-key",
+        LETTA_DEVICE_ID: "dev-1",
+        SANDBOX_MODE: "microsandbox",
+        MSB_BACKEND: "cloud",
+      }),
+    ).toThrow("Microsandbox cloud backend requires MSB_API_KEY (or MSB_PROFILE)");
+
+    expect(() =>
+      loadConfig({
+        LETTA_API_KEY: "test-key",
+        LETTA_DEVICE_ID: "dev-1",
+        SANDBOX_MODE: "microsandbox",
+        MSB_BACKEND: "bogus",
+      }),
+    ).toThrow("Invalid MSB_BACKEND");
+
+    expect(() =>
+      loadConfig({
+        LETTA_API_KEY: "test-key",
+        LETTA_DEVICE_ID: "dev-1",
+        SANDBOX_MODE: "microsandbox",
+        MSB_BACKEND: "cloud",
+        MSB_API_KEY: "msb_live_key",
+        MSB_COMPUTE_TYPE: "mega",
+      }),
+    ).toThrow("Invalid MSB_COMPUTE_TYPE");
+  });
+
+  test("SdkMsbRunner cloud mode skips local runtime/image/gh ops, creates Service, and removes both on cleanup", async () => {
+    const events: string[] = [];
+    const createdSpecs: MsbRunSpec[] = [];
+    const serviceTargets: Array<{ slug: string; sandboxName: string; guestPort: number }> = [];
+    const removedServices: string[] = [];
+    const destroyOpts: Array<{ force?: boolean } | undefined> = [];
+    const testEnv: Record<string, string | undefined> = {};
+
+    const failingLocalRuntimeOps: SdkRuntimeOps = {
+      resolveRuntime: () => {
+        throw new Error("resolveRuntime must not run in cloud mode");
+      },
+      resolveRuntimeVersion: async () => {
+        throw new Error("resolveRuntimeVersion must not run in cloud mode");
+      },
+      installRuntime: async () => {
+        throw new Error("installRuntime must not run in cloud mode");
+      },
+    };
+    const failingLocalImageOps: SdkImageOps = {
+      isCached: async () => {
+        throw new Error("imageOps.isCached must not run in cloud mode");
+      },
+      pull: async () => {
+        throw new Error("imageOps.pull must not run in cloud mode");
+      },
+    };
+    const failingGhOps: SdkGhBinaryOps = {
+      ensureBinary: async () => {
+        throw new Error("ghBinaryOps.ensureBinary must not run in cloud mode");
+      },
+    };
+
+    const sandboxOps: SdkSandboxOps = {
+      create: async (spec) => {
+        createdSpecs.push(spec);
+        events.push(`create:${spec.name}`);
+        return {
+          name: spec.name,
+          exec: async (cmd, args) => {
+            const argv = args ? Array.from(args) : [];
+            events.push(`exec:${cmd}:${argv[2] ?? ""}`);
+            expect(argv.slice(3)).toEqual(["/bin/sh", "-c", "exec letta server"]);
+            return { code: 0, success: true, stdout: () => "", stderr: () => "" };
+          },
+          execDetached: async () => {
+            throw new Error("execDetached is unsupported on cloud");
+          },
+          detach: async () => {
+            events.push("detach");
+          },
+          destroy: async (opts) => {
+            destroyOpts.push(opts);
+            events.push("destroy-inline");
+          },
+        };
+      },
+      get: async (name) => ({
+        destroy: async (opts) => {
+          destroyOpts.push(opts);
+          events.push(`destroy:${name}`);
+        },
+        exec: async (cmd, args) => ({
+          code: 0,
+          success: true,
+          stdout: () => `${cmd} ${Array.from(args ?? []).join(" ")} -> letta listening`,
+          stderr: () => "",
+        }),
+        listJobsWith: async () => ({ items: [] }),
+        getJob: async () => ({ logs: async () => [] }),
+        logs: async () => [],
+      }),
+    };
+
+    const serviceOps: SdkServiceOps = {
+      create: async (slug, sandboxName, guestPort) => {
+        serviceTargets.push({ slug, sandboxName, guestPort });
+        events.push(`service-create:${slug}`);
+        return {
+          slug,
+          url: `https://${slug}.microsandbox.dev`,
+          remove: async () => {
+            removedServices.push(slug);
+            events.push(`service-remove-inline:${slug}`);
+          },
+        };
+      },
+      get: async (slug) => ({
+        slug,
+        url: `https://${slug}.microsandbox.dev`,
+        remove: async () => {
+          removedServices.push(slug);
+          events.push(`service-remove:${slug}`);
+        },
+      }),
+    };
+
+    const runner = new SdkMsbRunner({
+      backend: "cloud",
+      msbApiKey: "msb_test_key",
+      msbApiUrl: "https://api.microsandbox.dev",
+      msbComputeType: "shared",
+      env: testEnv,
+      runtimeOps: failingLocalRuntimeOps,
+      imageOps: failingLocalImageOps,
+      ghBinaryOps: failingGhOps,
+      sandboxOps,
+      serviceOps,
+      makeServiceSlug: () => "lb-0123456789abcdef",
+      logger: silentLogger,
+    });
+
+    await runner.ensureReady("ghcr.io/letta-ai/letta-code:latest");
+    expect(testEnv.MSB_BACKEND).toBe("remote");
+    expect(testEnv.MSB_API_KEY).toBe("msb_test_key");
+    expect(testEnv.MSB_API_URL).toBe("https://api.microsandbox.dev");
+
+    const runResult = await runner.runSandbox({
+      name: "letta-msb-cloud-run",
+      image: "ghcr.io/letta-ai/letta-code:latest",
+      guestPort: 4500,
+      labels: { "letta-sandbox.managed": "true" },
+      env: { LETTA_WS_TOKEN: "tok-cloud" },
+      entrypoint: "/bin/sh",
+      command: ["-c", "exec letta server"],
+    });
+
+    expect(runResult).toEqual({
+      name: "letta-msb-cloud-run",
+      httpUrl: "https://lb-0123456789abcdef.microsandbox.dev",
+      wsUrl: "wss://lb-0123456789abcdef.microsandbox.dev/ws",
+      serviceSlug: "lb-0123456789abcdef",
+      serviceUrl: "https://lb-0123456789abcdef.microsandbox.dev",
+    });
+    expect(createdSpecs[0]?.backend).toBe("cloud");
+    expect(createdSpecs[0]?.ephemeral).toBe(true);
+    expect(createdSpecs[0]?.hostPort).toBeUndefined();
+    expect(createdSpecs[0]?.patches).toBeUndefined();
+    expect(serviceTargets).toEqual([
+      { slug: "lb-0123456789abcdef", sandboxName: "letta-msb-cloud-run", guestPort: 4500 },
+    ]);
+
+    const cloudLogs = await runner.readSandboxLogs("letta-msb-cloud-run");
+    expect(cloudLogs).toContain("/tmp/letta-server.log");
+
+    await runner.removeSandbox("letta-msb-cloud-run");
+    expect(removedServices).toEqual(["lb-0123456789abcdef"]);
+    expect(destroyOpts).toEqual([undefined]);
+    expect(events).toEqual([
+      "create:letta-msb-cloud-run",
+      "exec:/bin/sh:lettabox-launch",
+      "detach",
+      "service-create:lb-0123456789abcdef",
+      "service-remove:lb-0123456789abcdef",
+      "destroy:letta-msb-cloud-run",
+    ]);
+  });
+
+  test("SdkMsbRunner cloud mode destroys sandbox if Service creation fails and cleans up both even if Service.remove errors", async () => {
+    let destroyedOnCreateFail = false;
+    let destroyedOnRemove = false;
+
+    const failingCreateRunner = new SdkMsbRunner({
+      backend: "cloud",
+      msbApiKey: "msb_test_key",
+      env: {},
+      sandboxOps: {
+        create: async (spec) => ({
+          name: spec.name,
+          exec: async () => ({ code: 0, success: true, stdout: () => "", stderr: () => "" }),
+          execDetached: async () => {
+            throw new Error("execDetached is unsupported on cloud");
+          },
+          detach: async () => {},
+          destroy: async () => {
+            destroyedOnCreateFail = true;
+          },
+        }),
+        get: async () => {
+          throw new Error("unused");
+        },
+      },
+      serviceOps: {
+        create: async () => {
+          throw new Error("service quota exceeded");
+        },
+        get: async () => {
+          throw new Error("unused");
+        },
+      },
+      makeServiceSlug: () => "lb-fail-1",
+      logger: silentLogger,
+    });
+
+    await expect(
+      failingCreateRunner.runSandbox({
+        name: "letta-msb-svc-fail",
+        image: "ghcr.io/letta-ai/letta-code:latest",
+        guestPort: 4500,
+        labels: {},
+        env: {},
+        entrypoint: "/bin/sh",
+        command: ["-c", "exec letta server"],
+      }),
+    ).rejects.toThrow("service quota exceeded");
+    expect(destroyedOnCreateFail).toBe(true);
+
+    // If Service was already removed (ServiceNotFoundError), removeSandbox still destroys sandbox cleanly
+    const notFoundServiceRunner = new SdkMsbRunner({
+      backend: "cloud",
+      msbApiKey: "msb_test_key",
+      env: {},
+      sandboxOps: {
+        create: async (spec) => ({
+          name: spec.name,
+          exec: async () => ({ code: 0, success: true, stdout: () => "", stderr: () => "" }),
+          execDetached: async () => {
+            throw new Error("execDetached is unsupported on cloud");
+          },
+          detach: async () => {},
+          destroy: async () => {},
+        }),
+        get: async () => ({
+          destroy: async () => {
+            destroyedOnRemove = true;
+          },
+          listJobsWith: async () => ({ items: [] }),
+          getJob: async () => ({ logs: async () => [] }),
+          logs: async () => [],
+        }),
+      },
+      serviceOps: {
+        create: async (slug) => ({
+          slug,
+          url: `https://${slug}.microsandbox.dev`,
+          remove: async () => {},
+        }),
+        get: async () => {
+          throw new ServiceNotFoundError("already removed");
+        },
+      },
+      makeServiceSlug: () => "lb-gone-1",
+      logger: silentLogger,
+    });
+
+    await notFoundServiceRunner.runSandbox({
+      name: "letta-msb-svc-gone",
+      image: "ghcr.io/letta-ai/letta-code:latest",
+      guestPort: 4500,
+      labels: {},
+      env: {},
+    });
+    await notFoundServiceRunner.removeSandbox("letta-msb-svc-gone");
+    expect(destroyedOnRemove).toBe(true);
+  });
+
+  test("SdkMsbRunner cloud mode destroys sandbox if guest server launch exec fails", async () => {
+    let destroyed = false;
+    const runner = new SdkMsbRunner({
+      backend: "cloud",
+      msbApiKey: "msb_test_key",
+      env: {},
+      sandboxOps: {
+        create: async (spec) => ({
+          name: spec.name,
+          exec: async () => ({
+            code: 127,
+            success: false,
+            stdout: () => "",
+            stderr: () => "letta: command not found",
+          }),
+          execDetached: async () => {
+            throw new Error("execDetached is unsupported on cloud");
+          },
+          detach: async () => {},
+          destroy: async () => {
+            destroyed = true;
+          },
+        }),
+        get: async () => {
+          throw new Error("unused");
+        },
+      },
+      serviceOps: {
+        create: async () => {
+          throw new Error("should not create service after launch failure");
+        },
+        get: async () => {
+          throw new Error("unused");
+        },
+      },
+      logger: silentLogger,
+    });
+
+    await expect(
+      runner.runSandbox({
+        name: "letta-msb-exec-fail",
+        image: "ghcr.io/letta-ai/letta-code:latest",
+        guestPort: 4500,
+        labels: {},
+        env: {},
+        entrypoint: "/bin/sh",
+        command: ["-c", "exec letta server"],
+      }),
+    ).rejects.toThrow("(exit 127): letta: command not found");
+    expect(destroyed).toBe(true);
+  });
+
+  test("MicrosandboxProvider cloud mode skips host port allocation, sends capability token + skip-warning header, and exposes serviceUrl", async () => {
+    const mockMsb = createMockMsbRunner();
+    cleanups.push(() => mockMsb.cleanupAll());
+
+    let portAllocated = false;
+    const provider = new MicrosandboxProvider({
+      backend: "cloud",
+      image: "ghcr.io/letta-ai/letta-code:latest",
+      msbApiKey: "msb_test_key",
+      lettaApiKey: "sk-let-cloud-secret",
+      lettaServerUrl: "https://api.letta.com",
+      warmPoolSize: 0,
+      idleTimeoutMs: 60_000,
+      reaperIntervalMs: 60_000,
+      msb: mockMsb.runner,
+      allocatePort: async () => {
+        portAllocated = true;
+        return 49999;
+      },
+      logger: silentLogger,
+      onMessage: () => {},
+    });
+    cleanups.push(() => provider.closeAllAsync());
+
+    const target = await provider.acquireForConversation("conv-cloud-1");
+    expect(target).toBeDefined();
+    expect(portAllocated).toBe(false);
+    expect(mockMsb.spawnedSpecs).toHaveLength(1);
+    expect(mockMsb.spawnedSpecs[0]?.backend).toBe("cloud");
+    expect(mockMsb.spawnedSpecs[0]?.ephemeral).toBe(true);
+    expect(mockMsb.spawnedSpecs[0]?.hostPort).toBeUndefined();
+
+    const [inst] = [...mockMsb.sandboxes.values()];
+    expect(inst?.healthHeaders[0]?.["msb-skip-browser-warning"]).toBe("1");
+    expect(inst?.healthHeaders[0]?.authorization).toBe(`Bearer ${inst?.spec.env.LETTA_WS_TOKEN}`);
+    expect(inst?.wsHeaders[0]?.["msb-skip-browser-warning"]).toBe("1");
+    expect(inst?.wsHeaders[0]?.authorization).toBe(`Bearer ${inst?.spec.env.LETTA_WS_TOKEN}`);
+
+    const active = provider.listActiveSandboxes();
+    expect(active).toHaveLength(1);
+    expect(active[0]?.hostPort).toBeUndefined();
+    expect(active[0]?.serviceUrl).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+
+    await provider.closeAllAsync();
+    expect(mockMsb.removedNames).toEqual([inst!.name]);
+  });
+
+  test("MultiplexerProxy in cloud mode registers ☁️ emoji in metadata.machine.model", async () => {
+    const mockMsb = createMockMsbRunner();
+    cleanups.push(() => mockMsb.cleanupAll());
+
+    let registeredMachineModel: string | undefined;
+    const relayServer = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      async fetch(req, srv) {
+        const url = new URL(req.url);
+        if (url.pathname === "/v1/environments/register" && req.method === "POST") {
+          const body = (await req.json()) as { metadata?: { machine?: { model?: string } } };
+          registeredMachineModel = body.metadata?.machine?.model;
+          return Response.json({
+            connectionId: "conn-cloud-1",
+            wsUrl: `ws://127.0.0.1:${srv.port}/ws/relay`,
+            supportsSplitStatusChannels: false,
+            supportsPairedListenerGenerations: false,
+          });
+        }
+        if (url.pathname === "/ws/relay") {
+          if (srv.upgrade(req)) return undefined;
+        }
+        return new Response("not found", { status: 404 });
+      },
+      websocket: {
+        message() {},
+      },
+    });
+    cleanups.push(() => relayServer.stop(true));
+
+    const cpServer = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      fetch(req, srv) {
+        const url = new URL(req.url);
+        if (url.pathname === "/healthz") return new Response("ok");
+        if (url.pathname === "/app-server-info") {
+          return Response.json({ lettaCodeVersion: "0.34.61", supported_commands: ["input"] });
+        }
+        if (url.pathname === "/ws") {
+          if (srv.upgrade(req)) return undefined;
+        }
+        return new Response("not found", { status: 404 });
+      },
+      websocket: {
+        message() {},
+      },
+    });
+    cleanups.push(() => cpServer.stop(true));
+
+    const config: ProxyConfig = {
+      lettaApiKey: "test-api-key",
+      lettaServerUrl: `http://127.0.0.1:${relayServer.port}`,
+      connectionName: "cloud-laptop",
+      deviceId: "dev-cloud",
+      listenerInstanceId: deriveListenerInstanceId("cloud-laptop"),
+      downstreamWsUrl: `ws://127.0.0.1:${cpServer.port}/ws`,
+      downstreamHttpUrl: `http://127.0.0.1:${cpServer.port}`,
+      sandboxMode: "microsandbox",
+      sandbox: {
+        backend: "cloud",
+        image: "ghcr.io/letta-ai/letta-code:latest",
+        containerPort: 4500,
+        idleTimeoutMs: 60_000,
+        reaperIntervalMs: 60_000,
+        startTimeoutMs: 5_000,
+        memoryLimit: "2G",
+        cpuLimit: "2",
+        warmPoolSize: 0,
+        msbSecretInjection: true,
+        msbApiKey: "msb_test_key",
+      },
+      workerWsUrls: [],
+      heartbeatIntervalMs: 30_000,
+      heartbeatMaxMissed: 3,
+      reconnectBaseDelayMs: 30,
+      reconnectMaxDelayMs: 100,
+      downstreamReadyTimeoutMs: 5_000,
+      debugFrames: false,
+    };
+
+    let readyResolved = false;
+    const readyPromise = new Promise<void>((resolve) => {
+      const proxy = new MultiplexerProxy({
+        config,
+        msb: mockMsb.runner,
+        logger: silentLogger,
+        onUpstreamReady: () => {
+          readyResolved = true;
+          resolve();
+        },
+      });
+      cleanups.push(() => proxy.stopAsync());
+      void proxy.start();
+    });
+
+    await readyPromise;
+    expect(readyResolved).toBe(true);
+    expect(registeredMachineModel?.startsWith("☁️ ")).toBe(true);
+    expect(registeredMachineModel).not.toContain("Microsandbox Cloud");
+  });
+
+  test("SdkMsbRunner cloud mode cleans up orphaned sandbox when create() times out, but skips cleanup on CloudHttpError", async () => {
+    const destroyedNames: string[] = [];
+
+    const timeoutRunner = new SdkMsbRunner({
+      backend: "cloud",
+      msbApiKey: "msb_test_key",
+      env: {},
+      sandboxOps: {
+        create: async (spec) => {
+          throw new RuntimeError(
+            `cloud sandbox "${spec.name}" did not reach running before the readiness wait expired`,
+          );
+        },
+        get: async (name) => ({
+          destroy: async () => {
+            destroyedNames.push(name);
+          },
+          listJobsWith: async () => ({ items: [] }),
+          getJob: async () => ({ logs: async () => [] }),
+          logs: async () => [],
+        }),
+      },
+      serviceOps: {
+        create: async () => {
+          throw new Error("unused");
+        },
+        get: async () => {
+          throw new Error("unused");
+        },
+      },
+      logger: silentLogger,
+    });
+
+    await expect(
+      timeoutRunner.runSandbox({
+        name: "letta-msb-orphan-1",
+        image: "ghcr.io/letta-ai/letta-code:latest",
+        guestPort: 4500,
+        labels: {},
+        env: {},
+      }),
+    ).rejects.toThrow("did not reach running");
+    expect(destroyedNames).toEqual(["letta-msb-orphan-1"]);
+
+    let getCalled = false;
+    const httpErrRunner = new SdkMsbRunner({
+      backend: "cloud",
+      msbApiKey: "msb_test_key",
+      env: {},
+      sandboxOps: {
+        create: async () => {
+          throw new CloudHttpError("concurrent running sandbox limit reached");
+        },
+        get: async () => {
+          getCalled = true;
+          throw new Error("should not call get after CloudHttpError");
+        },
+      },
+      serviceOps: {
+        create: async () => {
+          throw new Error("unused");
+        },
+        get: async () => {
+          throw new Error("unused");
+        },
+      },
+      logger: silentLogger,
+    });
+
+    await expect(
+      httpErrRunner.runSandbox({
+        name: "letta-msb-403-1",
+        image: "ghcr.io/letta-ai/letta-code:latest",
+        guestPort: 4500,
+        labels: {},
+        env: {},
+      }),
+    ).rejects.toThrow("concurrent running sandbox limit reached");
+    expect(getCalled).toBe(false);
+  });
+
+  test("MicrosandboxProvider cloud mode enforces exponential backoff after failed spawns", async () => {
+    const mockMsb = createMockMsbRunner();
+    cleanups.push(() => mockMsb.cleanupAll());
+
+    let clock = 1_000_000;
+    let attempts = 0;
+    const origRun = mockMsb.runner.runSandbox.bind(mockMsb.runner);
+    mockMsb.runner.runSandbox = async (spec) => {
+      attempts += 1;
+      if (attempts === 1) {
+        throw new Error("concurrent running sandbox limit reached");
+      }
+      return origRun(spec);
+    };
+
+    const provider = new MicrosandboxProvider({
+      backend: "cloud",
+      image: "ghcr.io/letta-ai/letta-code:latest",
+      msbApiKey: "msb_test_key",
+      lettaApiKey: "test-key",
+      lettaServerUrl: "https://api.letta.com",
+      spawnFailureCooldownMs: 2_000,
+      idleTimeoutMs: 60_000,
+      reaperIntervalMs: 60_000,
+      msb: mockMsb.runner,
+      now: () => clock,
+      logger: silentLogger,
+      onMessage: () => {},
+    });
+    cleanups.push(() => provider.closeAllAsync());
+
+    await expect(provider.acquireForConversation("conv-backoff")).rejects.toThrow(
+      "concurrent running sandbox limit reached",
+    );
+    expect(attempts).toBe(1);
+
+    // Immediate retry during cooldown fails fast without hitting runSandbox again
+    clock += 500;
+    await expect(provider.acquireForConversation("conv-backoff")).rejects.toThrow(
+      "in backoff for 1500ms",
+    );
+    expect(attempts).toBe(1);
+
+    // Once cooldown expires, spawn retries and succeeds
+    clock += 1_500;
+    const target = await provider.acquireForConversation("conv-backoff");
+    expect(target).toBeDefined();
+    expect(attempts).toBe(2);
   });
 });

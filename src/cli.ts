@@ -6,7 +6,7 @@ import {
   resolveLettaCommand,
   spawnManagedControlPlane,
 } from "./control-plane.ts";
-import { type Logger, MultiplexerProxy } from "./proxy.ts";
+import { createConsoleLogger, formatLogLine, type Logger, MultiplexerProxy } from "./proxy.ts";
 import { type StatusServer, startStatusServer } from "./status-server.ts";
 
 export type LifecycleState =
@@ -37,9 +37,14 @@ Usage:
 Options:
   --name, --computer-name <name>  Environment name in chat.letta.com (default: lettabox-<hostname>)
   --mode <msb|static>             Sandbox mode (default: msb, or static if WORKER_URLS is set)
+  --backend <local|cloud>         Microsandbox backend (default: local; alias: remote)
+  --compute-type <standard|shared>
+                                  Microsandbox Cloud compute tier (cloud backend only)
+  --msb-profile <name>            Named Microsandbox profile from ~/.microsandbox/config.json
+  --msb-api-url <url>             Override Microsandbox Cloud API endpoint
   --image <oci-image>             OCI image for microVMs (default: ghcr.io/letta-ai/letta-code:latest)
-  --memory <size>                 Memory limit per microVM (default: 2G)
-  --cpus <count>                  vCPU limit per microVM (default: 2)
+  --memory <size>                 Memory limit per microVM (default: 2G local, 1G cloud)
+  --cpus <count>                  vCPU limit per microVM (default: 2 local, 1 cloud)
   --idle-timeout <ms>             Idle timeout before reaping microVMs (default: 1800000 / 30m)
   --control-plane-url <ws://>     Attach to an existing control-plane letta server instead of auto-spawning
   --status-port <port>            Expose local http://127.0.0.1:<port>/status JSON endpoint
@@ -52,6 +57,11 @@ Options:
 
 Environment:
   LETTA_API_KEY                   Letta Cloud API key (or auto-loaded from ~/.letta/settings.json)
+  MSB_BACKEND                     Microsandbox backend: local or cloud/remote (default: local)
+  MSB_API_KEY                     Microsandbox Cloud API key (required for cloud unless MSB_PROFILE is set)
+  MSB_API_URL                     Optional Microsandbox Cloud API URL override
+  MSB_PROFILE                     Optional named Microsandbox profile from ~/.microsandbox/config.json
+  MSB_COMPUTE_TYPE                Optional Microsandbox Cloud compute tier: standard or shared
   MSB_HOME                        Microsandbox home (default: ~/.lettabox/microsandbox)
 `;
 
@@ -122,6 +132,18 @@ export function parseCliArgs(
         break;
       case "--mode":
         envOverrides.SANDBOX_MODE = nextValue();
+        break;
+      case "--backend":
+        envOverrides.MSB_BACKEND = nextValue();
+        break;
+      case "--compute-type":
+        envOverrides.MSB_COMPUTE_TYPE = nextValue();
+        break;
+      case "--msb-profile":
+        envOverrides.MSB_PROFILE = nextValue();
+        break;
+      case "--msb-api-url":
+        envOverrides.MSB_API_URL = nextValue();
         break;
       case "--image":
         envOverrides.SANDBOX_IMAGE = nextValue();
@@ -223,17 +245,8 @@ export async function runCli(
 
   const jsonlMode = parsed.lifecycleOutput === "jsonl";
   const emitLifecycle = createLifecycleEmitter(jsonlMode);
-  const logInfo = (msg: string) =>
-    jsonlMode ? console.error(`[lettabox] ${msg}`) : console.log(`[lettabox] ${msg}`);
-
-  const proxyLogger: Logger | undefined = jsonlMode
-    ? {
-        info: (msg) => console.error(`[lettabox] ${msg}`),
-        warn: (msg) => console.error(`[lettabox] WARN: ${msg}`),
-        error: (msg) => console.error(`[lettabox] ERROR: ${msg}`),
-        debug: (msg) => console.error(`[lettabox] DEBUG: ${msg}`),
-      }
-    : undefined;
+  const proxyLogger: Logger = createConsoleLogger({ stderrOnly: jsonlMode });
+  const logInfo = (msg: string) => proxyLogger.info(msg);
 
   const mergedEnv: Record<string, string | undefined> = {
     ...baseEnv,
@@ -300,12 +313,12 @@ export async function runCli(
         lettaServerUrl: preConfig.lettaServerUrl,
         onStderr: preConfig.debugFrames
           ? (line) => {
-              console.error(`[lettabox:control-plane] ${line}`);
+              console.error(formatLogLine(line, { prefix: "lettabox:control-plane" }));
             }
           : undefined,
         onUnexpectedExit: (exitCode) => {
-          console.error(
-            `[lettabox] Managed control-plane exited unexpectedly (code ${exitCode}), shutting down...`,
+          proxyLogger.error(
+            `Managed control-plane exited unexpectedly (code ${exitCode}), shutting down...`,
           );
           void cleanupAndExit(1);
         },
@@ -351,6 +364,8 @@ export async function runCli(
           name: "lettabox",
           connectionName: config.connectionName,
           sandboxMode: config.sandboxMode,
+          sandboxBackend:
+            config.sandboxMode === "microsandbox" ? config.sandbox.backend : undefined,
           upstreamReady,
           uptimeMs: Date.now() - startedAt,
           activeSandboxes: activeProxy.listActiveSandboxes(),
@@ -370,14 +385,14 @@ export async function runCli(
 
     await activeProxy.start();
   } catch (err) {
-    console.error("[lettabox] Fatal error:", err);
+    console.error(formatLogLine("Fatal error:", { level: "ERROR" }), err);
     await cleanupAndExit(1);
   }
 }
 
 if (import.meta.main) {
   runCli().catch((err) => {
-    console.error("[lettabox] Fatal error:", err);
+    console.error(formatLogLine("Fatal error:", { level: "ERROR" }), err);
     process.exit(1);
   });
 }

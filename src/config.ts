@@ -4,8 +4,11 @@ import { homedir, hostname } from "node:os";
 import { dirname, join } from "node:path";
 
 export type SandboxMode = "static" | "microsandbox";
+export type SandboxBackend = "local" | "cloud";
+export type MsbComputeType = "standard" | "shared";
 
 export interface SandboxConfig {
+  backend: SandboxBackend;
   image: string;
   containerPort: number;
   idleTimeoutMs: number;
@@ -17,6 +20,10 @@ export interface SandboxConfig {
   msbBin?: string;
   msbHome?: string;
   msbSecretInjection: boolean;
+  msbApiKey?: string;
+  msbApiUrl?: string;
+  msbProfile?: string;
+  msbComputeType?: MsbComputeType;
 }
 
 export interface ProxyConfig {
@@ -108,6 +115,28 @@ function parseSandboxMode(value: string | undefined): SandboxMode {
     return "microsandbox";
   }
   throw new Error(`Invalid SANDBOX_MODE: ${value} (expected "static" or "microsandbox"/"msb")`);
+}
+
+export function parseSandboxBackend(value: string | undefined): SandboxBackend {
+  const normalized = value?.trim().toLowerCase();
+  if (!normalized || normalized === "local") {
+    return "local";
+  }
+  if (normalized === "cloud" || normalized === "remote") {
+    return "cloud";
+  }
+  throw new Error(`Invalid MSB_BACKEND: ${value} (expected "local" or "cloud"/"remote")`);
+}
+
+export function parseMsbComputeType(value: string | undefined): MsbComputeType | undefined {
+  const normalized = value?.trim().toLowerCase();
+  if (!normalized) {
+    return undefined;
+  }
+  if (normalized === "standard" || normalized === "shared") {
+    return normalized;
+  }
+  throw new Error(`Invalid MSB_COMPUTE_TYPE: ${value} (expected "standard" or "shared")`);
 }
 
 export function readApiKeyFromLettaSettings(
@@ -233,8 +262,23 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
   }
 
   const sandboxMode = parseSandboxMode(env.SANDBOX_MODE);
+  const sandboxBackend = parseSandboxBackend(env.MSB_BACKEND);
+  const msbApiKey = env.MSB_API_KEY?.trim() || undefined;
+  const msbApiUrl = env.MSB_API_URL?.trim() || undefined;
+  const msbProfile = env.MSB_PROFILE?.trim() || undefined;
+  const msbComputeType = parseMsbComputeType(env.MSB_COMPUTE_TYPE);
+
+  if (sandboxMode === "microsandbox" && sandboxBackend === "cloud" && !msbApiKey && !msbProfile) {
+    throw new Error(
+      "Microsandbox cloud backend requires MSB_API_KEY (or MSB_PROFILE); refusing to fall back to local",
+    );
+  }
+
   const msbSecretInjection =
     env.MSB_SECRET_INJECTION !== "0" && env.MSB_SECRET_INJECTION !== "false";
+  const defaultWarmPoolSize = sandboxBackend === "cloud" ? 0 : 1;
+  const defaultMemoryLimit = sandboxBackend === "cloud" ? "1G" : "2G";
+  const defaultCpuLimit = sandboxBackend === "cloud" ? "1" : "2";
 
   return {
     lettaApiKey,
@@ -247,6 +291,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     downstreamWsToken: downstreamWsToken || undefined,
     sandboxMode,
     sandbox: {
+      backend: sandboxBackend,
       image: env.SANDBOX_IMAGE?.trim() || "ghcr.io/letta-ai/letta-code:latest",
       containerPort: parsePositiveInt(env.SANDBOX_CONTAINER_PORT, 4500, "SANDBOX_CONTAINER_PORT"),
       idleTimeoutMs: parsePositiveInt(
@@ -264,12 +309,20 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
         30_000,
         "SANDBOX_START_TIMEOUT_MS",
       ),
-      memoryLimit: env.SANDBOX_MEMORY_LIMIT?.trim() || "2G",
-      cpuLimit: env.SANDBOX_CPU_LIMIT?.trim() || "2",
-      warmPoolSize: parseNonNegativeInt(env.SANDBOX_WARM_POOL_SIZE, 1, "SANDBOX_WARM_POOL_SIZE"),
+      memoryLimit: env.SANDBOX_MEMORY_LIMIT?.trim() || defaultMemoryLimit,
+      cpuLimit: env.SANDBOX_CPU_LIMIT?.trim() || defaultCpuLimit,
+      warmPoolSize: parseNonNegativeInt(
+        env.SANDBOX_WARM_POOL_SIZE,
+        defaultWarmPoolSize,
+        "SANDBOX_WARM_POOL_SIZE",
+      ),
       msbBin: env.MSB_PATH?.trim() || undefined,
       msbHome: env.MSB_HOME?.trim() || join(homedir(), ".lettabox", "microsandbox"),
       msbSecretInjection,
+      msbApiKey,
+      msbApiUrl,
+      msbProfile,
+      msbComputeType,
     },
     workerWsUrls,
     workerWsToken: workerWsToken || undefined,

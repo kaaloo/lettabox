@@ -3,6 +3,7 @@ import { decodeWsData } from "./protocol.ts";
 export interface DownstreamClientOptions {
   wsUrl: string;
   token?: string;
+  headers?: Record<string, string>;
   reconnectBaseDelayMs?: number;
   reconnectMaxDelayMs?: number;
   maxReconnectAttempts?: number;
@@ -17,6 +18,7 @@ export interface DownstreamClientOptions {
 export class DownstreamClient {
   private readonly wsUrl: string;
   private readonly token?: string;
+  private readonly headers?: Record<string, string>;
   private readonly reconnectBaseDelayMs: number;
   private readonly reconnectMaxDelayMs: number;
   private readonly maxReconnectAttempts?: number;
@@ -36,6 +38,7 @@ export class DownstreamClient {
   constructor(options: DownstreamClientOptions) {
     this.wsUrl = options.wsUrl;
     this.token = options.token;
+    this.headers = options.headers;
     this.reconnectBaseDelayMs = options.reconnectBaseDelayMs ?? 1_000;
     this.reconnectMaxDelayMs = options.reconnectMaxDelayMs ?? 30_000;
     this.maxReconnectAttempts = options.maxReconnectAttempts;
@@ -111,8 +114,14 @@ export class DownstreamClient {
     if (this.closed) return;
 
     const options: Bun.WebSocketOptions = {};
+    const mergedHeaders: Record<string, string> = {
+      ...this.headers,
+    };
     if (this.token) {
-      options.headers = { Authorization: `Bearer ${this.token}` };
+      mergedHeaders.Authorization = `Bearer ${this.token}`;
+    }
+    if (Object.keys(mergedHeaders).length > 0) {
+      options.headers = mergedHeaders;
     }
 
     const socket = new WebSocket(this.wsUrl, options);

@@ -1,11 +1,12 @@
 import type { Server } from "bun";
-import type { SandboxMode } from "./config.ts";
+import type { SandboxBackend, SandboxMode } from "./config.ts";
 import type { ActiveSandboxInfo } from "./microsandbox-provider.ts";
 
 export interface StatusSnapshot {
   name: "lettabox";
   connectionName: string;
   sandboxMode: SandboxMode;
+  sandboxBackend?: SandboxBackend;
   upstreamReady: boolean;
   uptimeMs: number;
   activeSandboxes: ActiveSandboxInfo[];

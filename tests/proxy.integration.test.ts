@@ -278,6 +278,7 @@ function makeConfig(
     downstreamHttpUrl: downstream.httpUrl,
     sandboxMode: "static",
     sandbox: {
+      backend: "local",
       image: "ghcr.io/letta-ai/letta-code:latest",
       containerPort: 4500,
       idleTimeoutMs: 900_000,
@@ -617,6 +618,8 @@ describe("PassthroughProxy integration", () => {
       runtime: { agent_id: "ag-1", conversation_id: "conv-a" },
       text: "hi worker 1",
     });
+    // Passive cold sync for conv-b routes to control-plane without acquiring worker-2;
+    // input acquires worker-2 and subsequent sync hits worker-2.
     relay.sendOnControl({
       type: "sync",
       runtime: { agent_id: "ag-1", conversation_id: "conv-b" },
@@ -627,11 +630,25 @@ describe("PassthroughProxy integration", () => {
       runtime: { agent_id: "ag-1", conversation_id: "conv-b" },
       text: "hi worker 2",
     });
+    relay.sendOnControl({
+      type: "sync",
+      runtime: { agent_id: "ag-1", conversation_id: "conv-b" },
+    });
 
-    await waitFor(() => worker1.received.length === 2 && worker2.received.length === 2);
-    expect(controlPlane.received).toHaveLength(3);
+    await waitFor(
+      () =>
+        controlPlane.received.length === 4 &&
+        worker1.received.length === 2 &&
+        worker2.received.length === 2,
+    );
+    expect(controlPlane.received.map((s) => JSON.parse(s).type)).toEqual([
+      "sync",
+      "list_models",
+      "conversation_messages_list",
+      "sync",
+    ]);
     expect(worker1.received.map((s) => JSON.parse(s).type)).toEqual(["runtime_start", "input"]);
-    expect(worker2.received.map((s) => JSON.parse(s).type)).toEqual(["sync", "input"]);
+    expect(worker2.received.map((s) => JSON.parse(s).type)).toEqual(["input", "sync"]);
 
     // 3. Worker-1 sends control_request -> upstream replies control_response -> routes back to worker-1
     worker1.sendToProxy({

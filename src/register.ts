@@ -9,6 +9,7 @@ export interface RegisterEnvironmentParams {
   connectionName: string;
   appServerInfo: AppServerInfo;
   machine?: MachineMetadata;
+  statusEmoji?: string;
   fetchImpl?: typeof fetch;
 }
 
@@ -18,6 +19,7 @@ export async function waitForDownstreamHealth(
     timeoutMs?: number;
     pollIntervalMs?: number;
     token?: string;
+    headers?: Record<string, string>;
     fetchImpl?: typeof fetch;
   } = {},
 ): Promise<void> {
@@ -25,7 +27,9 @@ export async function waitForDownstreamHealth(
   const pollIntervalMs = options.pollIntervalMs ?? 250;
   const fetchImpl = options.fetchImpl ?? fetch;
   const deadline = Date.now() + timeoutMs;
-  const headers: Record<string, string> = {};
+  const headers: Record<string, string> = {
+    ...options.headers,
+  };
   if (options.token) {
     headers.Authorization = `Bearer ${options.token}`;
   }
@@ -91,7 +95,7 @@ export async function registerEnvironment(
     "unknown";
   const supportedCommands =
     params.appServerInfo.supported_commands ?? params.appServerInfo.supportedCommands ?? [];
-  const machine = params.machine ?? (await getMachineMetadata());
+  const machine = params.machine ?? (await getMachineMetadata(params.statusEmoji));
 
   const body = {
     deviceId: params.deviceId,

@@ -9,6 +9,7 @@ import {
   resolveLettaCommand,
   spawnManagedControlPlane,
 } from "../src/control-plane.ts";
+import { createConsoleLogger, formatLogLine } from "../src/proxy.ts";
 import { fetchAppServerInfo, waitForDownstreamHealth } from "../src/register.ts";
 import { type StatusServer, startStatusServer } from "../src/status-server.ts";
 
@@ -99,6 +100,29 @@ describe("lettabox CLI argument parsing", () => {
     expect(parsed.lifecycleOutput).toBe("jsonl");
   });
 
+  test("parses cloud backend flags (--backend, --compute-type, --msb-profile, --msb-api-url)", () => {
+    const parsed = parseCliArgs(
+      [
+        "--backend",
+        "cloud",
+        "--compute-type",
+        "shared",
+        "--msb-profile",
+        "work",
+        "--msb-api-url",
+        "https://sandbox.example.com",
+      ],
+      {},
+    );
+    expect(parsed.envOverrides).toMatchObject({
+      SANDBOX_MODE: "microsandbox",
+      MSB_BACKEND: "cloud",
+      MSB_COMPUTE_TYPE: "shared",
+      MSB_PROFILE: "work",
+      MSB_API_URL: "https://sandbox.example.com",
+    });
+  });
+
   test("createLifecycleEmitter writes deduplicated lettaLifecycleProtocol v1 JSONL lines", () => {
     const lines: string[] = [];
     const emit = createLifecycleEmitter(true, (line) => lines.push(line));
@@ -142,6 +166,7 @@ describe("StatusServer", () => {
         name: "lettabox",
         connectionName: "my-mac",
         sandboxMode: "microsandbox",
+        sandboxBackend: "cloud",
         upstreamReady: true,
         uptimeMs: 1234,
         activeSandboxes: [
@@ -149,7 +174,7 @@ describe("StatusServer", () => {
             id: "msb-1",
             sandboxName: "letta-msb-abc",
             conversationId: "conv-1",
-            hostPort: 49155,
+            serviceUrl: "https://lb-0123456789abcdef.microsandbox.dev",
             busy: true,
             lastActivityAt: 1700000000,
           },
@@ -166,8 +191,18 @@ describe("StatusServer", () => {
     expect(statusRes.status).toBe(200);
     const body = (await statusRes.json()) as Record<string, unknown>;
     expect(body.name).toBe("lettabox");
+    expect(body.sandboxBackend).toBe("cloud");
     expect(body.upstreamReady).toBe(true);
-    expect((body.activeSandboxes as unknown[]).length).toBe(1);
+    expect(body.activeSandboxes).toEqual([
+      {
+        id: "msb-1",
+        sandboxName: "letta-msb-abc",
+        conversationId: "conv-1",
+        serviceUrl: "https://lb-0123456789abcdef.microsandbox.dev",
+        busy: true,
+        lastActivityAt: 1700000000,
+      },
+    ]);
 
     const notFound = await fetch(`${srv.url}/nope`);
     expect(notFound.status).toBe(404);
@@ -320,5 +355,59 @@ describe("StatusServer", () => {
     } finally {
       await cp.stop();
     }
+  });
+
+  test("formatLogLine and createConsoleLogger prepend ISO-8601 UTC timestamps and respect stderrOnly", () => {
+    const fixedNow = () => new Date("2026-11-25T15:30:45.123Z");
+
+    expect(formatLogLine("hello", { now: fixedNow })).toBe(
+      "2026-11-25T15:30:45.123Z [lettabox] hello",
+    );
+    expect(
+      formatLogLine("boom", { prefix: "lettabox:control-plane", level: "ERROR", now: fixedNow }),
+    ).toBe("2026-11-25T15:30:45.123Z [lettabox:control-plane] ERROR: boom");
+
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    const warn: string[] = [];
+    const logger = createConsoleLogger({
+      now: fixedNow,
+      writeStdout: (line) => stdout.push(line),
+      writeStderr: (line) => stderr.push(line),
+      writeWarn: (line) => warn.push(line),
+    });
+    logger.info("started");
+    logger.warn("slow");
+    logger.error("failed");
+    logger.debug("frame");
+
+    expect(stdout).toEqual([
+      "2026-11-25T15:30:45.123Z [lettabox] started",
+      "2026-11-25T15:30:45.123Z [lettabox] DEBUG: frame",
+    ]);
+    expect(warn).toEqual(["2026-11-25T15:30:45.123Z [lettabox] WARN: slow"]);
+    expect(stderr).toEqual(["2026-11-25T15:30:45.123Z [lettabox] ERROR: failed"]);
+
+    const jsonlStdout: string[] = [];
+    const jsonlStderr: string[] = [];
+    const jsonlLogger = createConsoleLogger({
+      stderrOnly: true,
+      now: fixedNow,
+      writeStdout: (line) => jsonlStdout.push(line),
+      writeStderr: (line) => jsonlStderr.push(line),
+      writeWarn: (line) => jsonlStdout.push(line),
+    });
+    jsonlLogger.info("a");
+    jsonlLogger.warn("b");
+    jsonlLogger.error("c");
+    jsonlLogger.debug("d");
+
+    expect(jsonlStdout).toEqual([]);
+    expect(jsonlStderr).toEqual([
+      "2026-11-25T15:30:45.123Z [lettabox] a",
+      "2026-11-25T15:30:45.123Z [lettabox] WARN: b",
+      "2026-11-25T15:30:45.123Z [lettabox] ERROR: c",
+      "2026-11-25T15:30:45.123Z [lettabox] DEBUG: d",
+    ]);
   });
 });

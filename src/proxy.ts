@@ -1,5 +1,6 @@
 import type { ProxyConfig } from "./config.ts";
 import { DownstreamClient } from "./downstream.ts";
+import { LETTABOX_CLOUD_STATUS_EMOJI, LETTABOX_STATUS_EMOJI } from "./machine-metadata.ts";
 import { type ActiveSandboxInfo, MicrosandboxProvider } from "./microsandbox-provider.ts";
 import type { MsbRunner } from "./msb-runner.ts";
 import { fetchAppServerInfo, waitForDownstreamHealth } from "./register.ts";
@@ -18,12 +19,54 @@ export interface Logger {
   debug: (msg: string) => void;
 }
 
-const defaultLogger: Logger = {
-  info: (msg) => console.log(`[lettabox] ${msg}`),
-  warn: (msg) => console.warn(`[lettabox] WARN: ${msg}`),
-  error: (msg) => console.error(`[lettabox] ERROR: ${msg}`),
-  debug: (msg) => console.log(`[lettabox] DEBUG: ${msg}`),
-};
+export function formatLogLine(
+  msg: string,
+  options: { prefix?: string; level?: "WARN" | "ERROR" | "DEBUG"; now?: () => Date } = {},
+): string {
+  const ts = (options.now ?? (() => new Date()))().toISOString();
+  const prefix = options.prefix ?? "lettabox";
+  const level = options.level ? `${options.level}: ` : "";
+  return `${ts} [${prefix}] ${level}${msg}`;
+}
+
+export function createConsoleLogger(
+  options: {
+    stderrOnly?: boolean;
+    now?: () => Date;
+    writeStdout?: (line: string) => void;
+    writeStderr?: (line: string) => void;
+    writeWarn?: (line: string) => void;
+  } = {},
+): Logger {
+  const stderrOnly = options.stderrOnly ?? false;
+  const now = options.now;
+  const writeStdout = options.writeStdout ?? ((line) => console.log(line));
+  const writeStderr = options.writeStderr ?? ((line) => console.error(line));
+  const writeWarn = options.writeWarn ?? ((line) => console.warn(line));
+
+  return {
+    info: (msg) => {
+      const line = formatLogLine(msg, { now });
+      if (stderrOnly) writeStderr(line);
+      else writeStdout(line);
+    },
+    warn: (msg) => {
+      const line = formatLogLine(msg, { level: "WARN", now });
+      if (stderrOnly) writeStderr(line);
+      else writeWarn(line);
+    },
+    error: (msg) => {
+      writeStderr(formatLogLine(msg, { level: "ERROR", now }));
+    },
+    debug: (msg) => {
+      const line = formatLogLine(msg, { level: "DEBUG", now });
+      if (stderrOnly) writeStderr(line);
+      else writeStdout(line);
+    },
+  };
+}
+
+const defaultLogger: Logger = createConsoleLogger();
 
 export interface PassthroughProxyOptions {
   config: ProxyConfig;
@@ -95,9 +138,15 @@ export class PassthroughProxy {
       "unknown";
     const cmdCount = (appServerInfo.supported_commands ?? appServerInfo.supportedCommands ?? [])
       .length;
+    const isCloudSandbox =
+      this.config.sandboxMode === "microsandbox" && this.config.sandbox.backend === "cloud";
+    const computeSuffix =
+      isCloudSandbox && this.config.sandbox.msbComputeType
+        ? `, computeType=${this.config.sandbox.msbComputeType}`
+        : "";
     const modeDesc =
       this.config.sandboxMode === "microsandbox"
-        ? `microsandbox mode (image=${this.config.sandbox.image}, secretProxy=${this.config.sandbox.msbSecretInjection})`
+        ? `microsandbox mode (backend=${this.config.sandbox.backend}, image=${this.config.sandbox.image}, secretProxy=${this.config.sandbox.msbSecretInjection}${computeSuffix})`
         : `${this.config.workerWsUrls.length} configured worker(s)`;
     this.logger.info(
       `Control-plane ready (letta-code ${version}, ${cmdCount} supported_commands, ${modeDesc})`,
@@ -140,9 +189,14 @@ export class PassthroughProxy {
     let provider: ConversationTargetProvider;
     if (this.config.sandboxMode === "microsandbox") {
       const msbProvider = new MicrosandboxProvider({
+        backend: this.config.sandbox.backend,
         image: this.config.sandbox.image,
         msbBin: this.config.sandbox.msbBin,
         msbHome: this.config.sandbox.msbHome,
+        msbApiKey: this.config.sandbox.msbApiKey,
+        msbApiUrl: this.config.sandbox.msbApiUrl,
+        msbProfile: this.config.sandbox.msbProfile,
+        msbComputeType: this.config.sandbox.msbComputeType,
         guestPort: this.config.sandbox.containerPort,
         memoryLimit: this.config.sandbox.memoryLimit,
         cpuLimit: this.config.sandbox.cpuLimit,
@@ -211,6 +265,7 @@ export class PassthroughProxy {
       listenerInstanceId: this.config.listenerInstanceId,
       connectionName: this.config.connectionName,
       appServerInfo,
+      statusEmoji: isCloudSandbox ? LETTABOX_CLOUD_STATUS_EMOJI : LETTABOX_STATUS_EMOJI,
       heartbeatIntervalMs: this.config.heartbeatIntervalMs,
       heartbeatMaxMissed: this.config.heartbeatMaxMissed,
       reconnectBaseDelayMs: this.config.reconnectBaseDelayMs,

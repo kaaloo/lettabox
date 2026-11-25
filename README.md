@@ -53,6 +53,24 @@ To inspect active microVMs from a local clone (or query `/status` with `--status
 MSB_HOME="$HOME/.lettabox/microsandbox" bunx msb list --label letta-sandbox.managed=true
 ```
 
+## Microsandbox Cloud
+
+Run per-conversation microVMs on [Microsandbox Cloud](https://docs.microsandbox.dev/cloud/connect) instead of locally (no local `msb` runtime or KVM required):
+
+```sh
+export MSB_API_KEY="msb_..."
+lettabox --backend cloud
+```
+
+Or use Microsandbox's native environment variables (`MSB_BACKEND=cloud` or `MSB_BACKEND=remote`, plus `MSB_API_KEY` or a saved `MSB_PROFILE` from `~/.microsandbox/config.json`).
+
+Cloud backend behavior:
+
+- Exposes each ephemeral cloud microVM's `letta server` via a Microsandbox `Service` (`https://<slug>.<domain>` / `wss://<slug>.<domain>/ws`), authenticated with `lettabox`'s 256-bit capability token and removed automatically when the sandbox is reaped or `lettabox` exits.
+- Defaults `SANDBOX_WARM_POOL_SIZE` to `0`, `SANDBOX_MEMORY_LIMIT` to `1G`, and `SANDBOX_CPU_LIMIT` to `1` on cloud (all overridable) so Free-plan limits and the 1–8 GiB/vCPU ratio work out of the box without idle standby spend.
+- Skips local `msb` runtime installation, local OCI image pulling, and host-cached `gh` binary injection.
+- Uses `☁️` instead of `📦` as the environment status subtitle emoji in `chat.letta.com`.
+
 ## macOS Menubar Integration
 
 `lettabox` is a drop-in replacement for `letta server` in desktop wrappers such as [`letta-server-macos-menubar`](https://tangled.org/kaaloo.tngl.sh/letta-server-macos-menubar):
@@ -65,7 +83,7 @@ lettabox --computer-name "My MacBook Pro" --status-port 4590
 ```
 
 - `GET http://127.0.0.1:4590/healthz` → `200 ok`
-- `GET http://127.0.0.1:4590/status` → JSON snapshot (`connectionName`, `sandboxMode`, `upstreamReady`, `uptimeMs`, `activeSandboxes[]`)
+- `GET http://127.0.0.1:4590/status` → JSON snapshot (`connectionName`, `sandboxMode`, `sandboxBackend`, `upstreamReady`, `uptimeMs`, `activeSandboxes[]`)
 
 > [!WARNING]
 > The status server has no authentication and binds to loopback (`127.0.0.1`) only. Do not expose it to a network or reverse proxy.
@@ -78,11 +96,16 @@ Run `lettabox --help` for the full flag list.
 | --------------------------- | ------------------------- | ------------------------------------ | --------------------------------------------------------------------------- |
 | `--name`, `--computer-name` | `LETTA_CONNECTION_NAME`   | `lettabox-<hostname>`                | Display name shown in `chat.letta.com`                                      |
 | `--mode`                    | `SANDBOX_MODE`            | `microsandbox` (CLI) / `static`      | `microsandbox` (`msb`) or `static` (`WORKER_URLS`)                          |
+| `--backend`                 | `MSB_BACKEND`             | `local`                              | Microsandbox backend: `local` or `cloud` (`remote` alias)                   |
+| `--compute-type`            | `MSB_COMPUTE_TYPE`        | _(server default)_                   | Microsandbox Cloud compute tier: `standard` or `shared`                     |
+| `--msb-profile`             | `MSB_PROFILE`             | _(unset)_                            | Named Microsandbox profile from `~/.microsandbox/config.json`               |
+| `--msb-api-url`             | `MSB_API_URL`             | `https://api.microsandbox.dev`       | Override Microsandbox Cloud API endpoint                                    |
+| —                           | `MSB_API_KEY`             | _(unset)_                            | Microsandbox Cloud API key (required for cloud unless `MSB_PROFILE` is set) |
 | `--image`                   | `SANDBOX_IMAGE`           | `ghcr.io/letta-ai/letta-code:latest` | OCI image for ephemeral conversation microVMs                               |
-| `--memory`                  | `SANDBOX_MEMORY_LIMIT`    | `2G`                                 | Memory limit per microVM                                                    |
-| `--cpus`                    | `SANDBOX_CPU_LIMIT`       | `2`                                  | vCPU limit per microVM                                                      |
+| `--memory`                  | `SANDBOX_MEMORY_LIMIT`    | `2G` (local) / `1G` (cloud)          | Memory limit per microVM                                                    |
+| `--cpus`                    | `SANDBOX_CPU_LIMIT`       | `2` (local) / `1` (cloud)            | vCPU limit per microVM                                                      |
 | `--idle-timeout`            | `SANDBOX_IDLE_TIMEOUT_MS` | `1800000` (30m)                      | Idle duration before an inactive conversation microVM is reaped             |
-| —                           | `SANDBOX_WARM_POOL_SIZE`  | `1`                                  | Number of pre-warmed standby microVMs kept ready (`0` to disable)           |
+| —                           | `SANDBOX_WARM_POOL_SIZE`  | `1` (local) / `0` (cloud)            | Number of pre-warmed standby microVMs kept ready (`0` to disable)           |
 | `--control-plane-url`       | `CONTROL_PLANE_URL`       | _(auto-spawned)_                     | Attach to an existing `letta server --listen` instead of auto-spawning      |
 | `--status-port`             | `STATUS_PORT`             | _(disabled)_                         | Expose local `http://127.0.0.1:<port>/status` JSON endpoint                 |
 | `--lifecycle-output jsonl`  | —                         | _(disabled)_                         | Emit `lettaLifecycleProtocol: 1` JSONL state transitions on stdout          |
