@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import type { Server, ServerWebSocket } from "bun";
-import { ServiceNotFoundError } from "microsandbox";
+import { CloudHttpError, RuntimeError, ServiceNotFoundError } from "microsandbox";
 import { deriveListenerInstanceId, loadConfig, type ProxyConfig } from "../src/config.ts";
 import { MicrosandboxProvider } from "../src/microsandbox-provider.ts";
 import {
@@ -1453,6 +1453,8 @@ describe("Microsandbox Cloud backend", () => {
     });
     expect(localWithKey.sandbox.backend).toBe("local");
     expect(localWithKey.sandbox.warmPoolSize).toBe(1);
+    expect(localWithKey.sandbox.memoryLimit).toBe("2G");
+    expect(localWithKey.sandbox.cpuLimit).toBe("2");
 
     // Explicit MSB_BACKEND=cloud with MSB_API_KEY
     const cloudCfg = loadConfig({
@@ -1466,6 +1468,8 @@ describe("Microsandbox Cloud backend", () => {
     });
     expect(cloudCfg.sandbox.backend).toBe("cloud");
     expect(cloudCfg.sandbox.warmPoolSize).toBe(0);
+    expect(cloudCfg.sandbox.memoryLimit).toBe("1G");
+    expect(cloudCfg.sandbox.cpuLimit).toBe("1");
     expect(cloudCfg.sandbox.msbApiKey).toBe("msb_live_key");
     expect(cloudCfg.sandbox.msbApiUrl).toBe("https://sandbox.example.com");
     expect(cloudCfg.sandbox.msbComputeType).toBe("shared");
@@ -1898,5 +1902,136 @@ describe("Microsandbox Cloud backend", () => {
     expect(readyResolved).toBe(true);
     expect(registeredMachineModel?.startsWith("☁️ ")).toBe(true);
     expect(registeredMachineModel).not.toContain("Microsandbox Cloud");
+  });
+
+  test("SdkMsbRunner cloud mode cleans up orphaned sandbox when create() times out, but skips cleanup on CloudHttpError", async () => {
+    const destroyedNames: string[] = [];
+
+    const timeoutRunner = new SdkMsbRunner({
+      backend: "cloud",
+      msbApiKey: "msb_test_key",
+      env: {},
+      sandboxOps: {
+        create: async (spec) => {
+          throw new RuntimeError(
+            `cloud sandbox "${spec.name}" did not reach running before the readiness wait expired`,
+          );
+        },
+        get: async (name) => ({
+          destroy: async () => {
+            destroyedNames.push(name);
+          },
+          listJobsWith: async () => ({ items: [] }),
+          getJob: async () => ({ logs: async () => [] }),
+          logs: async () => [],
+        }),
+      },
+      serviceOps: {
+        create: async () => {
+          throw new Error("unused");
+        },
+        get: async () => {
+          throw new Error("unused");
+        },
+      },
+      logger: silentLogger,
+    });
+
+    await expect(
+      timeoutRunner.runSandbox({
+        name: "letta-msb-orphan-1",
+        image: "ghcr.io/letta-ai/letta-code:latest",
+        guestPort: 4500,
+        labels: {},
+        env: {},
+      }),
+    ).rejects.toThrow("did not reach running");
+    expect(destroyedNames).toEqual(["letta-msb-orphan-1"]);
+
+    let getCalled = false;
+    const httpErrRunner = new SdkMsbRunner({
+      backend: "cloud",
+      msbApiKey: "msb_test_key",
+      env: {},
+      sandboxOps: {
+        create: async () => {
+          throw new CloudHttpError("concurrent running sandbox limit reached");
+        },
+        get: async () => {
+          getCalled = true;
+          throw new Error("should not call get after CloudHttpError");
+        },
+      },
+      serviceOps: {
+        create: async () => {
+          throw new Error("unused");
+        },
+        get: async () => {
+          throw new Error("unused");
+        },
+      },
+      logger: silentLogger,
+    });
+
+    await expect(
+      httpErrRunner.runSandbox({
+        name: "letta-msb-403-1",
+        image: "ghcr.io/letta-ai/letta-code:latest",
+        guestPort: 4500,
+        labels: {},
+        env: {},
+      }),
+    ).rejects.toThrow("concurrent running sandbox limit reached");
+    expect(getCalled).toBe(false);
+  });
+
+  test("MicrosandboxProvider cloud mode enforces exponential backoff after failed spawns", async () => {
+    const mockMsb = createMockMsbRunner();
+    cleanups.push(() => mockMsb.cleanupAll());
+
+    let clock = 1_000_000;
+    let attempts = 0;
+    const origRun = mockMsb.runner.runSandbox.bind(mockMsb.runner);
+    mockMsb.runner.runSandbox = async (spec) => {
+      attempts += 1;
+      if (attempts === 1) {
+        throw new Error("concurrent running sandbox limit reached");
+      }
+      return origRun(spec);
+    };
+
+    const provider = new MicrosandboxProvider({
+      backend: "cloud",
+      image: "ghcr.io/letta-ai/letta-code:latest",
+      msbApiKey: "msb_test_key",
+      lettaApiKey: "test-key",
+      lettaServerUrl: "https://api.letta.com",
+      spawnFailureCooldownMs: 2_000,
+      idleTimeoutMs: 60_000,
+      reaperIntervalMs: 60_000,
+      msb: mockMsb.runner,
+      now: () => clock,
+      logger: silentLogger,
+      onMessage: () => {},
+    });
+    cleanups.push(() => provider.closeAllAsync());
+
+    await expect(provider.acquireForConversation("conv-backoff")).rejects.toThrow(
+      "concurrent running sandbox limit reached",
+    );
+    expect(attempts).toBe(1);
+
+    // Immediate retry during cooldown fails fast without hitting runSandbox again
+    clock += 500;
+    await expect(provider.acquireForConversation("conv-backoff")).rejects.toThrow(
+      "in backoff for 1500ms",
+    );
+    expect(attempts).toBe(1);
+
+    // Once cooldown expires, spawn retries and succeeds
+    clock += 1_500;
+    const target = await provider.acquireForConversation("conv-backoff");
+    expect(target).toBeDefined();
+    expect(attempts).toBe(2);
   });
 });

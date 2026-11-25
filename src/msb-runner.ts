@@ -3,8 +3,10 @@ import { randomBytes } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import {
+  CloudHttpError,
   Image,
   ImageNotFoundError,
+  InvalidConfigError,
   installRuntime,
   LocalContext,
   RemoteContext,
@@ -12,6 +14,7 @@ import {
   resolveRuntime,
   resolveRuntimeVersion,
   Sandbox,
+  SandboxAlreadyExistsError,
   type SandboxBuilder,
   SandboxNotFoundError,
   Service,
@@ -532,7 +535,26 @@ export class SdkMsbRunner implements MsbRunner {
       hostPort: undefined,
       ephemeral: spec.ephemeral ?? true,
     };
-    const sandbox = await this.sandboxOps.create(effectiveSpec);
+    let sandbox: SdkSandboxInstance;
+    try {
+      sandbox = await this.sandboxOps.create(effectiveSpec);
+    } catch (error) {
+      // If create() failed after the cloud API accepted the sandbox (e.g. readiness
+      // wait expired while the sandbox remained starting), attempt best-effort cleanup
+      // by name so it does not stay orphaned and consume the concurrency quota.
+      const definitelyNotCreated =
+        error instanceof CloudHttpError ||
+        error instanceof InvalidConfigError ||
+        error instanceof SandboxNotFoundError ||
+        error instanceof SandboxAlreadyExistsError;
+      if (!definitelyNotCreated) {
+        await this.sandboxOps
+          .get(effectiveSpec.name)
+          .then((handle) => handle.destroy())
+          .catch(() => {});
+      }
+      throw error;
+    }
     const launch = resolveMsbLaunchCommand(effectiveSpec);
     let createdService: SdkServiceInstance | null = null;
     try {

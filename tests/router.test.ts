@@ -176,13 +176,17 @@ describe("EnvelopeRouter", () => {
         text: "hello a",
       }),
     );
-    // Conversation B starts directly with sync + input (no runtime_start)
+    // Conversation B receives a passive cold sync first (must NOT spawn a worker),
+    // then input spawns the worker, and a subsequent sync hits the running worker.
     await router.handleUpstreamMessage(
       JSON.stringify({
         type: "sync",
         runtime: { agent_id: "ag-1", conversation_id: "conv-b" },
       }),
     );
+    expect(control.parsed().map((f) => f.type)).toEqual(["sync"]);
+    expect(fake.workers.size).toBe(1);
+
     await router.handleUpstreamMessage(
       JSON.stringify({
         type: "input",
@@ -191,8 +195,13 @@ describe("EnvelopeRouter", () => {
         text: "hello b",
       }),
     );
+    await router.handleUpstreamMessage(
+      JSON.stringify({
+        type: "sync",
+        runtime: { agent_id: "ag-1", conversation_id: "conv-b" },
+      }),
+    );
 
-    expect(control.sent).toHaveLength(0);
     expect(fake.workers.size).toBe(2);
     expect(
       fake.convMap
@@ -205,7 +214,7 @@ describe("EnvelopeRouter", () => {
         .get("conv-b")!
         .parsed()
         .map((f) => f.type),
-    ).toEqual(["sync", "input"]);
+    ).toEqual(["input", "sync"]);
   });
 
   test("binds create_conversation runtime_start pending worker on runtime_start_response", async () => {
@@ -393,22 +402,22 @@ describe("EnvelopeRouter", () => {
 
     const p1 = router.handleUpstreamMessage(
       JSON.stringify({
-        type: "sync",
+        type: "change_device_state",
         runtime: { agent_id: "a", conversation_id: "conv-cold" },
       }),
     );
     const p2 = router.handleUpstreamMessage(
       JSON.stringify({
-        type: "change_device_state",
-        runtime: { agent_id: "a", conversation_id: "conv-cold" },
-      }),
-    );
-    const p3 = router.handleUpstreamMessage(
-      JSON.stringify({
         type: "input",
         request_id: "r1",
         runtime: { agent_id: "a", conversation_id: "conv-cold" },
         text: "ordered",
+      }),
+    );
+    const p3 = router.handleUpstreamMessage(
+      JSON.stringify({
+        type: "sync",
+        runtime: { agent_id: "a", conversation_id: "conv-cold" },
       }),
     );
 
@@ -419,7 +428,7 @@ describe("EnvelopeRouter", () => {
         .get("conv-cold")!
         .parsed()
         .map((f) => f.type),
-    ).toEqual(["sync", "change_device_state", "input"]);
+    ).toEqual(["change_device_state", "input", "sync"]);
   });
 
   test("routes non-CRUD frames with top-level conversation_id (e.g. abort_message) to conversation worker", async () => {

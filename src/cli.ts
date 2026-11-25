@@ -43,8 +43,8 @@ Options:
   --msb-profile <name>            Named Microsandbox profile from ~/.microsandbox/config.json
   --msb-api-url <url>             Override Microsandbox Cloud API endpoint
   --image <oci-image>             OCI image for microVMs (default: ghcr.io/letta-ai/letta-code:latest)
-  --memory <size>                 Memory limit per microVM (default: 2G)
-  --cpus <count>                  vCPU limit per microVM (default: 2)
+  --memory <size>                 Memory limit per microVM (default: 2G local, 1G cloud)
+  --cpus <count>                  vCPU limit per microVM (default: 2 local, 1 cloud)
   --idle-timeout <ms>             Idle timeout before reaping microVMs (default: 1800000 / 30m)
   --control-plane-url <ws://>     Attach to an existing control-plane letta server instead of auto-spawning
   --status-port <port>            Expose local http://127.0.0.1:<port>/status JSON endpoint

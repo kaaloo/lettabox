@@ -227,6 +227,12 @@ export class EnvelopeRouter {
       if (convId === DEFAULT_CONVERSATION_ID) {
         return { target: this.controlPlane, isCreateConversation: false };
       }
+      // Passive UI syncs should hit an already-running conversation sandbox, but must
+      // not cold-spawn new sandboxes for every open tab before user interaction.
+      if (env.type === "sync") {
+        const existing = this.conversationProvider.getTarget(convId);
+        return { target: existing ?? this.controlPlane, isCreateConversation: false };
+      }
       const target = await this.conversationProvider.acquireForConversation(convId);
       return { target, isCreateConversation: false };
     }

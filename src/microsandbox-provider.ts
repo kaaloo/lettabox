@@ -48,6 +48,7 @@ export interface MicrosandboxProviderOptions {
   startTimeoutMs?: number;
   reconnectBaseDelayMs?: number;
   reconnectMaxDelayMs?: number;
+  spawnFailureCooldownMs?: number;
   maxReconnectAttempts?: number;
   msb?: MsbRunner;
   allocatePort?: () => Promise<number>;
@@ -141,6 +142,7 @@ export class MicrosandboxProvider implements ConversationTargetProvider {
   private readonly idleTimeoutMs: number;
   private readonly reaperIntervalMs: number;
   private readonly startTimeoutMs: number;
+  private readonly spawnFailureCooldownMs: number;
   private readonly maxReconnectAttempts: number;
   private readonly allocatePort: () => Promise<number>;
   private readonly now: () => number;
@@ -148,6 +150,10 @@ export class MicrosandboxProvider implements ConversationTargetProvider {
   private readonly conversationMap = new Map<string, ManagedMicrosandbox>();
   private readonly pendingMap = new Map<string, ManagedMicrosandbox>();
   private readonly inFlightSpawns = new Map<string, Promise<ManagedMicrosandbox>>();
+  private readonly spawnCooldowns = new Map<
+    string,
+    { failures: number; retryAfter: number; lastError: string }
+  >();
   private readonly warmPool: ManagedMicrosandbox[] = [];
   private readonly warmRefills = new Set<Promise<void>>();
   private warmRefillRetryTimer: ReturnType<typeof setTimeout> | null = null;
@@ -180,6 +186,8 @@ export class MicrosandboxProvider implements ConversationTargetProvider {
       options.reaperIntervalMs ??
       Math.max(1_000, Math.min(30_000, Math.floor(this.idleTimeoutMs / 2)));
     this.startTimeoutMs = options.startTimeoutMs ?? 30_000;
+    this.spawnFailureCooldownMs =
+      options.spawnFailureCooldownMs ?? (this.backend === "cloud" ? 2_000 : 0);
     this.maxReconnectAttempts = options.maxReconnectAttempts ?? 2;
     this.allocatePort = options.allocatePort ?? allocateEphemeralLoopbackPort;
     this.now = options.now ?? (() => Date.now());
@@ -240,14 +248,18 @@ export class MicrosandboxProvider implements ConversationTargetProvider {
     const spawnKey = `conv:${conversationId}`;
     let inFlight = this.inFlightSpawns.get(spawnKey);
     if (!inFlight) {
+      this.assertNotInSpawnCooldown(spawnKey);
+
       const warm = this.claimWarmSandbox({ conversationId });
       if (warm) {
+        this.spawnCooldowns.delete(spawnKey);
         this.conversationMap.set(conversationId, warm);
         return warm.target;
       }
 
       inFlight = this.spawnSandbox({ conversationId })
         .then((sandbox) => {
+          this.spawnCooldowns.delete(spawnKey);
           if (this.closed) {
             void this.destroySandbox(sandbox, "provider closed during spawn");
             throw new Error("MicrosandboxProvider closed during spawn");
@@ -255,6 +267,10 @@ export class MicrosandboxProvider implements ConversationTargetProvider {
           this.conversationMap.set(conversationId, sandbox);
           this.refillWarmPool();
           return sandbox;
+        })
+        .catch((err) => {
+          this.recordSpawnFailure(spawnKey, err);
+          throw err;
         })
         .finally(() => {
           this.inFlightSpawns.delete(spawnKey);
@@ -287,14 +303,18 @@ export class MicrosandboxProvider implements ConversationTargetProvider {
     const spawnKey = `req:${requestId}`;
     let inFlight = this.inFlightSpawns.get(spawnKey);
     if (!inFlight) {
+      this.assertNotInSpawnCooldown(spawnKey);
+
       const warm = this.claimWarmSandbox({ pendingRequestId: requestId });
       if (warm) {
+        this.spawnCooldowns.delete(spawnKey);
         this.pendingMap.set(requestId, warm);
         return warm.target;
       }
 
       inFlight = this.spawnSandbox({ pendingRequestId: requestId })
         .then((sandbox) => {
+          this.spawnCooldowns.delete(spawnKey);
           if (this.closed) {
             void this.destroySandbox(sandbox, "provider closed during spawn");
             throw new Error("MicrosandboxProvider closed during spawn");
@@ -302,6 +322,10 @@ export class MicrosandboxProvider implements ConversationTargetProvider {
           this.pendingMap.set(requestId, sandbox);
           this.refillWarmPool();
           return sandbox;
+        })
+        .catch((err) => {
+          this.recordSpawnFailure(spawnKey, err);
+          throw err;
         })
         .finally(() => {
           this.inFlightSpawns.delete(spawnKey);
@@ -314,6 +338,31 @@ export class MicrosandboxProvider implements ConversationTargetProvider {
     const sandbox = await inFlight;
     sandbox.lastActivityAt = this.now();
     return sandbox.target;
+  }
+
+  private assertNotInSpawnCooldown(spawnKey: string): void {
+    if (this.spawnFailureCooldownMs <= 0) return;
+    const entry = this.spawnCooldowns.get(spawnKey);
+    if (!entry) return;
+    const remainingMs = entry.retryAfter - this.now();
+    if (remainingMs > 0) {
+      throw new Error(
+        `Sandbox spawn for ${spawnKey} in backoff for ${remainingMs}ms after ${entry.failures} failure(s): ${entry.lastError}`,
+      );
+    }
+  }
+
+  private recordSpawnFailure(spawnKey: string, err: unknown): void {
+    if (this.spawnFailureCooldownMs <= 0 || this.closed) return;
+    const prev = this.spawnCooldowns.get(spawnKey);
+    const failures = (prev?.failures ?? 0) + 1;
+    const maxDelay = this.options.reconnectMaxDelayMs ?? 30_000;
+    const delay = Math.min(this.spawnFailureCooldownMs * 2 ** (failures - 1), maxDelay);
+    this.spawnCooldowns.set(spawnKey, {
+      failures,
+      retryAfter: this.now() + delay,
+      lastError: String(err),
+    });
   }
 
   bindPendingToConversation(

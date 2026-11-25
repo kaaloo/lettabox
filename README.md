@@ -67,7 +67,7 @@ Or use Microsandbox's native environment variables (`MSB_BACKEND=cloud` or `MSB_
 Cloud backend behavior:
 
 - Exposes each ephemeral cloud microVM's `letta server` via a Microsandbox `Service` (`https://<slug>.<domain>` / `wss://<slug>.<domain>/ws`), authenticated with `lettabox`'s 256-bit capability token and removed automatically when the sandbox is reaped or `lettabox` exits.
-- Defaults `SANDBOX_WARM_POOL_SIZE` to `0` on cloud (overridable) so idle standby VMs do not accrue cloud compute charges.
+- Defaults `SANDBOX_WARM_POOL_SIZE` to `0`, `SANDBOX_MEMORY_LIMIT` to `1G`, and `SANDBOX_CPU_LIMIT` to `1` on cloud (all overridable) so Free-plan limits and the 1–8 GiB/vCPU ratio work out of the box without idle standby spend.
 - Skips local `msb` runtime installation, local OCI image pulling, and host-cached `gh` binary injection.
 - Uses `☁️` instead of `📦` as the environment status subtitle emoji in `chat.letta.com`.
 
@@ -102,8 +102,8 @@ Run `lettabox --help` for the full flag list.
 | `--msb-api-url`             | `MSB_API_URL`             | `https://api.microsandbox.dev`       | Override Microsandbox Cloud API endpoint                                    |
 | —                           | `MSB_API_KEY`             | _(unset)_                            | Microsandbox Cloud API key (required for cloud unless `MSB_PROFILE` is set) |
 | `--image`                   | `SANDBOX_IMAGE`           | `ghcr.io/letta-ai/letta-code:latest` | OCI image for ephemeral conversation microVMs                               |
-| `--memory`                  | `SANDBOX_MEMORY_LIMIT`    | `2G`                                 | Memory limit per microVM                                                    |
-| `--cpus`                    | `SANDBOX_CPU_LIMIT`       | `2`                                  | vCPU limit per microVM                                                      |
+| `--memory`                  | `SANDBOX_MEMORY_LIMIT`    | `2G` (local) / `1G` (cloud)          | Memory limit per microVM                                                    |
+| `--cpus`                    | `SANDBOX_CPU_LIMIT`       | `2` (local) / `1` (cloud)            | vCPU limit per microVM                                                      |
 | `--idle-timeout`            | `SANDBOX_IDLE_TIMEOUT_MS` | `1800000` (30m)                      | Idle duration before an inactive conversation microVM is reaped             |
 | —                           | `SANDBOX_WARM_POOL_SIZE`  | `1` (local) / `0` (cloud)            | Number of pre-warmed standby microVMs kept ready (`0` to disable)           |
 | `--control-plane-url`       | `CONTROL_PLANE_URL`       | _(auto-spawned)_                     | Attach to an existing `letta server --listen` instead of auto-spawning      |

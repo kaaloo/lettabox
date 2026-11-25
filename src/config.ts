@@ -277,6 +277,8 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
   const msbSecretInjection =
     env.MSB_SECRET_INJECTION !== "0" && env.MSB_SECRET_INJECTION !== "false";
   const defaultWarmPoolSize = sandboxBackend === "cloud" ? 0 : 1;
+  const defaultMemoryLimit = sandboxBackend === "cloud" ? "1G" : "2G";
+  const defaultCpuLimit = sandboxBackend === "cloud" ? "1" : "2";
 
   return {
     lettaApiKey,
@@ -307,8 +309,8 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
         30_000,
         "SANDBOX_START_TIMEOUT_MS",
       ),
-      memoryLimit: env.SANDBOX_MEMORY_LIMIT?.trim() || "2G",
-      cpuLimit: env.SANDBOX_CPU_LIMIT?.trim() || "2",
+      memoryLimit: env.SANDBOX_MEMORY_LIMIT?.trim() || defaultMemoryLimit,
+      cpuLimit: env.SANDBOX_CPU_LIMIT?.trim() || defaultCpuLimit,
       warmPoolSize: parseNonNegativeInt(
         env.SANDBOX_WARM_POOL_SIZE,
         defaultWarmPoolSize,
