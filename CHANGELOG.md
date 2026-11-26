@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.5.0](https://github.com/kaaloo/lettabox/compare/lettabox-v0.4.0...lettabox-v0.5.0) (2026-11-26)
+
+
+### Features
+
+* add Microsandbox Cloud backend option ([dd3a6e2](https://github.com/kaaloo/lettabox/commit/dd3a6e267a1f2477964600abe32fa83ac98d75bc))
+* add Microsandbox Cloud backend option ([d3d89ab](https://github.com/kaaloo/lettabox/commit/d3d89ab37f369782e4418e633cd546e103c2655d)), closes [#30](https://github.com/kaaloo/lettabox/issues/30)
+* **logging:** prepend ISO-8601 UTC timestamps and cloud phase timings to logs ([0a13780](https://github.com/kaaloo/lettabox/commit/0a13780e21d40830a2fa247d6e97370f93e68f40))
+
+
+### Bug Fixes
+
+* **auth:** use `letta setup` instead of removed `letta login` and quiet test stderr ([e889633](https://github.com/kaaloo/lettabox/commit/e88963301195f7e302335c1593016df30c52ff2c))
+* **auth:** use `letta setup` instead of removed `letta login` and quiet test stderr ([2647219](https://github.com/kaaloo/lettabox/commit/2647219fec102fd6b1bfe0055b32230660def0cc)), closes [#35](https://github.com/kaaloo/lettabox/issues/35)
+* **cloud:** avoid cold-spawning on sync, clean up timed-out creates, and default to 1G/1 vCPU ([f3e2a64](https://github.com/kaaloo/lettabox/commit/f3e2a64b8bbd386dc8984fabcbd4590c30bc4243))
+* **cloud:** launch guest server via exec and omit custom entrypoint/cmd on cloud create ([464ed5f](https://github.com/kaaloo/lettabox/commit/464ed5ff2d34cf35959d2015500fae128c57ea70))
+* **msb:** enable autoConversationTitles in guest microVMs by default ([5dbfb1c](https://github.com/kaaloo/lettabox/commit/5dbfb1c017f7da241c361fe2dd7272e3321f2730))
+* **msb:** enable autoConversationTitles in guest microVMs by default ([2c4c937](https://github.com/kaaloo/lettabox/commit/2c4c9373243b1b4a9e893838f4f9e18e431256ae)), closes [#33](https://github.com/kaaloo/lettabox/issues/33)
+
 ## [0.4.0](https://github.com/kaaloo/lettabox/compare/lettabox-v0.3.0...lettabox-v0.4.0) (2026-11-23)
 
 
