@@ -1,8 +1,20 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { Server, ServerWebSocket } from "bun";
 import { CloudHttpError, RuntimeError, ServiceNotFoundError } from "microsandbox";
 import { deriveListenerInstanceId, loadConfig, type ProxyConfig } from "../src/config.ts";
-import { MicrosandboxProvider } from "../src/microsandbox-provider.ts";
+import { buildMsbBootstrapScript, MicrosandboxProvider } from "../src/microsandbox-provider.ts";
 import {
   buildSdkSandbox,
   type MsbRunner,
@@ -475,6 +487,7 @@ describe("MicrosandboxProvider lifecycle", () => {
         memoryLimit: "1G",
         cpuLimit: "1",
         msbSecretInjection: true,
+        autoConversationTitles: true,
       },
       workerWsUrls: [],
       heartbeatIntervalMs: 30_000,
@@ -1949,6 +1962,7 @@ describe("Microsandbox Cloud backend", () => {
         warmPoolSize: 0,
         msbSecretInjection: true,
         msbApiKey: "msb_test_key",
+        autoConversationTitles: true,
       },
       workerWsUrls: [],
       heartbeatIntervalMs: 30_000,
@@ -2109,5 +2123,308 @@ describe("Microsandbox Cloud backend", () => {
     const target = await provider.acquireForConversation("conv-backoff");
     expect(target).toBeDefined();
     expect(attempts).toBe(2);
+  });
+});
+
+describe("Guest autoConversationTitles bootstrap seeding", () => {
+  async function runBootstrapWithFakeLetta(options: {
+    script: string;
+    homeDir: string;
+    lettaConfigDir?: string;
+    token?: string;
+    port?: number;
+  }): Promise<{
+    exitCode: number;
+    args: string[];
+    env: Record<string, string | undefined>;
+    tokenFileContent: string;
+    stderr: string;
+  }> {
+    const binDir = mkdtempSync(join(tmpdir(), "lettabox-fake-letta-"));
+    const reportPath = join(binDir, "report.json");
+    cleanups.push(() => rmSync(binDir, { recursive: true, force: true }));
+    cleanups.push(() => rmSync("/tmp/letta-ws-token", { force: true }));
+
+    const fakeLettaPath = join(binDir, "letta");
+    writeFileSync(
+      fakeLettaPath,
+      `#!${process.execPath}
+const fs = require("node:fs");
+const tokenFileContent = fs.existsSync("/tmp/letta-ws-token")
+  ? fs.readFileSync("/tmp/letta-ws-token", "utf8")
+  : "";
+fs.writeFileSync(
+  ${JSON.stringify(reportPath)},
+  JSON.stringify({
+    args: process.argv.slice(2),
+    env: {
+      LETTA_WS_TOKEN: process.env.LETTA_WS_TOKEN,
+      LETTA_SETTINGS_PATH: process.env.LETTA_SETTINGS_PATH,
+      _lb_dir: process.env._lb_dir,
+      _lb_settings: process.env._lb_settings,
+    },
+    tokenFileContent,
+  }),
+);
+`,
+      "utf8",
+    );
+    chmodSync(fakeLettaPath, 0o755);
+
+    const env: Record<string, string> = {
+      PATH: `${binDir}:${process.env.PATH ?? "/usr/bin:/bin"}`,
+      HOME: options.homeDir,
+      LETTA_WS_TOKEN: options.token ?? "test-cap-token-123",
+      LETTA_LISTEN_PORT: String(options.port ?? 4500),
+    };
+    if (options.lettaConfigDir !== undefined) {
+      env.LETTA_CONFIG_DIR = options.lettaConfigDir;
+    }
+
+    const proc = Bun.spawn(["/bin/sh", "-c", options.script], {
+      env,
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [stderr, exitCode] = await Promise.all([new Response(proc.stderr).text(), proc.exited]);
+    const report = JSON.parse(readFileSync(reportPath, "utf8")) as {
+      args: string[];
+      env: Record<string, string | undefined>;
+      tokenFileContent: string;
+    };
+    return {
+      exitCode,
+      args: report.args,
+      env: report.env,
+      tokenFileContent: report.tokenFileContent,
+      stderr,
+    };
+  }
+
+  test("seeds ~/.letta/settings.json on fresh microVM without leaking bootstrap vars", async () => {
+    const homeDir = mkdtempSync(join(tmpdir(), "lettabox-home-fresh-"));
+    cleanups.push(() => rmSync(homeDir, { recursive: true, force: true }));
+
+    const result = await runBootstrapWithFakeLetta({
+      script: buildMsbBootstrapScript(),
+      homeDir,
+      token: "fresh-token-abc",
+      port: 4612,
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(result.args).toEqual([
+      "server",
+      "--listen",
+      "ws://0.0.0.0:4612",
+      "--ws-auth",
+      "capability-token",
+      "--ws-token-file",
+      "/tmp/letta-ws-token",
+    ]);
+    expect(result.tokenFileContent).toBe("fresh-token-abc\n");
+    expect(result.env.LETTA_WS_TOKEN).toBeUndefined();
+    expect(result.env.LETTA_SETTINGS_PATH).toBeUndefined();
+    expect(result.env._lb_dir).toBeUndefined();
+    expect(result.env._lb_settings).toBeUndefined();
+
+    const lettaDir = join(homeDir, ".letta");
+    const settingsPath = join(lettaDir, "settings.json");
+    expect(existsSync(settingsPath)).toBe(true);
+    expect(JSON.parse(readFileSync(settingsPath, "utf8"))).toEqual({
+      autoConversationTitles: true,
+      autoConversationTitlesRollbackApplied: true,
+    });
+    expect(statSync(lettaDir).mode & 0o777).toBe(0o700);
+    expect(statSync(settingsPath).mode & 0o777).toBe(0o600);
+  });
+
+  test("merges into existing ~/.letta/settings.json while preserving unrelated keys", async () => {
+    const homeDir = mkdtempSync(join(tmpdir(), "lettabox-home-merge-"));
+    cleanups.push(() => rmSync(homeDir, { recursive: true, force: true }));
+
+    const lettaDir = join(homeDir, ".letta");
+    mkdirSync(lettaDir, { recursive: true });
+    const settingsPath = join(lettaDir, "settings.json");
+    writeFileSync(
+      settingsPath,
+      JSON.stringify({
+        tokenStreaming: true,
+        autoConversationTitles: false,
+        recentModels: ["claude-sonnet"],
+      }),
+      "utf8",
+    );
+
+    const result = await runBootstrapWithFakeLetta({
+      script: buildMsbBootstrapScript({ autoConversationTitles: true }),
+      homeDir,
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(JSON.parse(readFileSync(settingsPath, "utf8"))).toEqual({
+      tokenStreaming: true,
+      autoConversationTitles: true,
+      autoConversationTitlesRollbackApplied: true,
+      recentModels: ["claude-sonnet"],
+    });
+  });
+
+  test("recovers cleanly when existing settings.json is malformed or non-object JSON", async () => {
+    for (const raw of ["{not-valid-json", "[]", "null"]) {
+      const homeDir = mkdtempSync(join(tmpdir(), "lettabox-home-corrupt-"));
+      cleanups.push(() => rmSync(homeDir, { recursive: true, force: true }));
+
+      const lettaDir = join(homeDir, ".letta");
+      mkdirSync(lettaDir, { recursive: true });
+      const settingsPath = join(lettaDir, "settings.json");
+      writeFileSync(settingsPath, raw, "utf8");
+
+      const result = await runBootstrapWithFakeLetta({
+        script: buildMsbBootstrapScript({ autoConversationTitles: true }),
+        homeDir,
+      });
+
+      expect(result.exitCode).toBe(0);
+      expect(JSON.parse(readFileSync(settingsPath, "utf8"))).toEqual({
+        autoConversationTitles: true,
+        autoConversationTitlesRollbackApplied: true,
+      });
+    }
+  });
+
+  test("respects LETTA_CONFIG_DIR when set", async () => {
+    const homeDir = mkdtempSync(join(tmpdir(), "lettabox-home-cfgdir-"));
+    const customConfigDir = join(homeDir, "custom-letta-config");
+    cleanups.push(() => rmSync(homeDir, { recursive: true, force: true }));
+
+    const result = await runBootstrapWithFakeLetta({
+      script: buildMsbBootstrapScript({ autoConversationTitles: true }),
+      homeDir,
+      lettaConfigDir: customConfigDir,
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(existsSync(join(homeDir, ".letta", "settings.json"))).toBe(false);
+    expect(JSON.parse(readFileSync(join(customConfigDir, "settings.json"), "utf8"))).toEqual({
+      autoConversationTitles: true,
+      autoConversationTitlesRollbackApplied: true,
+    });
+  });
+
+  test("leaves ~/.letta/settings.json untouched when autoConversationTitles is false", async () => {
+    const homeDir = mkdtempSync(join(tmpdir(), "lettabox-home-disabled-"));
+    cleanups.push(() => rmSync(homeDir, { recursive: true, force: true }));
+
+    const result = await runBootstrapWithFakeLetta({
+      script: buildMsbBootstrapScript({ autoConversationTitles: false }),
+      homeDir,
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(existsSync(join(homeDir, ".letta", "settings.json"))).toBe(false);
+  });
+
+  test("MicrosandboxProvider wires autoConversationTitles for both local and cloud backends", async () => {
+    for (const backend of ["local", "cloud"] as const) {
+      for (const enabled of [true, false]) {
+        const mockMsb = createMockMsbRunner();
+        cleanups.push(() => mockMsb.cleanupAll());
+
+        const provider = new MicrosandboxProvider({
+          backend,
+          image: "ghcr.io/letta-ai/letta-code:latest",
+          msbApiKey: backend === "cloud" ? "msb_test_key" : undefined,
+          lettaApiKey: "test-key",
+          lettaServerUrl: "https://api.letta.com",
+          autoConversationTitles: enabled,
+          idleTimeoutMs: 60_000,
+          reaperIntervalMs: 60_000,
+          msb: mockMsb.runner,
+          logger: silentLogger,
+          onMessage: () => {},
+        });
+        cleanups.push(() => provider.closeAllAsync());
+
+        await provider.acquireForConversation(`conv-${backend}-${enabled}`);
+        expect(mockMsb.spawnedSpecs).toHaveLength(1);
+        expect(mockMsb.spawnedSpecs[0]?.entrypoint).toBe("/bin/sh");
+        expect(mockMsb.spawnedSpecs[0]?.command).toEqual([
+          "-c",
+          buildMsbBootstrapScript({ autoConversationTitles: enabled }),
+        ]);
+      }
+    }
+  });
+
+  test("MultiplexerProxy forwards sandbox.autoConversationTitles=false to MicrosandboxProvider", async () => {
+    const mockMsb = createMockMsbRunner();
+    cleanups.push(() => mockMsb.cleanupAll());
+
+    const cpServer = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      fetch(req, server) {
+        const url = new URL(req.url);
+        if (url.pathname === "/healthz") return new Response("ok");
+        if (url.pathname === "/app-server-info") {
+          return Response.json({ lettaCodeVersion: "0.34.70", supported_commands: ["input"] });
+        }
+        if (url.pathname === "/ws" && server.upgrade(req)) return undefined;
+        return new Response("not found", { status: 404 });
+      },
+      websocket: { message() {} },
+    });
+    cleanups.push(() => cpServer.stop(true));
+
+    const relayServer = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      fetch(req, server) {
+        const url = new URL(req.url);
+        if (url.pathname === "/v1/environments/register") {
+          return Response.json({
+            connectionId: "conn-auto-titles",
+            wsUrl: `ws://127.0.0.1:${server.port}/ws`,
+            supportsSplitStatusChannels: false,
+            supportsPairedListenerGenerations: false,
+          });
+        }
+        if (url.pathname === "/ws" && server.upgrade(req)) return undefined;
+        return new Response("not found", { status: 404 });
+      },
+      websocket: {
+        open(ws) {
+          ws.send(JSON.stringify({ type: "listener_ready" }));
+        },
+        message() {},
+      },
+    });
+    cleanups.push(() => relayServer.stop(true));
+
+    const config = loadConfig({
+      LETTA_API_KEY: "test-key",
+      LETTA_SERVER_URL: `http://127.0.0.1:${relayServer.port}`,
+      LETTA_DEVICE_ID: "dev-auto-titles",
+      CONTROL_PLANE_URL: `ws://127.0.0.1:${cpServer.port}/ws`,
+      SANDBOX_MODE: "microsandbox",
+      SANDBOX_WARM_POOL_SIZE: "1",
+      SANDBOX_AUTO_CONVERSATION_TITLES: "false",
+    });
+
+    const proxy = new MultiplexerProxy({
+      config,
+      msb: mockMsb.runner,
+      logger: silentLogger,
+    });
+    cleanups.push(() => proxy.stopAsync());
+
+    await proxy.start();
+    expect(mockMsb.spawnedSpecs).toHaveLength(1);
+    expect(mockMsb.spawnedSpecs[0]?.command).toEqual([
+      "-c",
+      buildMsbBootstrapScript({ autoConversationTitles: false }),
+    ]);
   });
 });

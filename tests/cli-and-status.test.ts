@@ -123,6 +123,42 @@ describe("lettabox CLI argument parsing", () => {
     });
   });
 
+  test("parses --no-auto-conversation-titles and --auto-conversation-titles flags", () => {
+    const disabled = parseCliArgs(["--no-auto-conversation-titles"], {});
+    expect(disabled.envOverrides.SANDBOX_AUTO_CONVERSATION_TITLES).toBe("false");
+
+    const enabled = parseCliArgs(["--auto-conversation-titles"], {
+      SANDBOX_AUTO_CONVERSATION_TITLES: "false",
+    });
+    expect(enabled.envOverrides.SANDBOX_AUTO_CONVERSATION_TITLES).toBe("true");
+  });
+
+  test("loadConfig parses SANDBOX_AUTO_CONVERSATION_TITLES with default true", () => {
+    const base = { LETTA_API_KEY: "test-key", LETTA_DEVICE_ID: "dev-1" };
+    expect(loadConfig(base).sandbox.autoConversationTitles).toBe(true);
+    expect(
+      loadConfig({ ...base, SANDBOX_AUTO_CONVERSATION_TITLES: "false" }).sandbox
+        .autoConversationTitles,
+    ).toBe(false);
+    expect(
+      loadConfig({ ...base, SANDBOX_AUTO_CONVERSATION_TITLES: "0" }).sandbox.autoConversationTitles,
+    ).toBe(false);
+    expect(
+      loadConfig({ ...base, SANDBOX_AUTO_CONVERSATION_TITLES: "NO" }).sandbox
+        .autoConversationTitles,
+    ).toBe(false);
+    expect(
+      loadConfig({ ...base, SANDBOX_AUTO_CONVERSATION_TITLES: "1" }).sandbox.autoConversationTitles,
+    ).toBe(true);
+    expect(
+      loadConfig({ ...base, SANDBOX_AUTO_CONVERSATION_TITLES: "yes" }).sandbox
+        .autoConversationTitles,
+    ).toBe(true);
+    expect(() => loadConfig({ ...base, SANDBOX_AUTO_CONVERSATION_TITLES: "maybe" })).toThrow(
+      "Invalid boolean for SANDBOX_AUTO_CONVERSATION_TITLES",
+    );
+  });
+
   test("createLifecycleEmitter writes deduplicated lettaLifecycleProtocol v1 JSONL lines", () => {
     const lines: string[] = [];
     const emit = createLifecycleEmitter(true, (line) => lines.push(line));

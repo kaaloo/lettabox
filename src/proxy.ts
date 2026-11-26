@@ -204,6 +204,7 @@ export class PassthroughProxy {
         lettaApiKey: this.config.lettaApiKey,
         lettaServerUrl: this.config.lettaServerUrl,
         useSecretInjection: this.config.sandbox.msbSecretInjection,
+        autoConversationTitles: this.config.sandbox.autoConversationTitles,
         idleTimeoutMs: this.config.sandbox.idleTimeoutMs,
         reaperIntervalMs: this.config.sandbox.reaperIntervalMs,
         startTimeoutMs: this.config.sandbox.startTimeoutMs,

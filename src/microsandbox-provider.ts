@@ -42,6 +42,7 @@ export interface MicrosandboxProviderOptions {
   lettaApiKey: string;
   lettaServerUrl: string;
   useSecretInjection?: boolean;
+  autoConversationTitles?: boolean;
   command?: string[];
   idleTimeoutMs?: number;
   reaperIntervalMs?: number;
@@ -77,8 +78,30 @@ interface ManagedMicrosandbox {
 const BUSY_LOOP_STATUSES = new Set(["running", "processing", "waiting", "thinking", "streaming"]);
 const IDLE_LOOP_STATUSES = new Set(["idle", "ready", "completed", "error", "aborted", "cancelled"]);
 
-export const DEFAULT_MSB_BOOTSTRAP_SCRIPT =
-  'umask 077; printf "%s\\n" "$LETTA_WS_TOKEN" > /tmp/letta-ws-token; unset LETTA_WS_TOKEN; exec letta server --listen "ws://0.0.0.0:${LETTA_LISTEN_PORT:-4500}" --ws-auth capability-token --ws-token-file /tmp/letta-ws-token';
+const SEED_AUTO_CONVERSATION_TITLES_MERGE_JS =
+  'const fs=require("fs"),p=process.env.LETTA_SETTINGS_PATH;let d={};try{const v=JSON.parse(fs.readFileSync(p,"utf8"));if(v&&typeof v==="object"&&!Array.isArray(v))d=v;}catch{}d.autoConversationTitles=true;d.autoConversationTitlesRollbackApplied=true;fs.writeFileSync(p,JSON.stringify(d,null,2)+"\\n",{mode:0o600});';
+
+const SEED_AUTO_CONVERSATION_TITLES_SNIPPET = [
+  '_lb_dir="${LETTA_CONFIG_DIR:-${HOME:-/root}/.letta}";',
+  '_lb_settings="$_lb_dir/settings.json";',
+  'mkdir -p "$_lb_dir";',
+  'if [ -f "$_lb_settings" ]; then',
+  `if command -v node >/dev/null 2>&1; then LETTA_SETTINGS_PATH="$_lb_settings" node -e '${SEED_AUTO_CONVERSATION_TITLES_MERGE_JS}';`,
+  `elif command -v bun >/dev/null 2>&1; then LETTA_SETTINGS_PATH="$_lb_settings" bun -e '${SEED_AUTO_CONVERSATION_TITLES_MERGE_JS}';`,
+  'else printf \'{"autoConversationTitles":true,"autoConversationTitlesRollbackApplied":true}\\n\' > "$_lb_settings"; fi;',
+  'else printf \'{"autoConversationTitles":true,"autoConversationTitlesRollbackApplied":true}\\n\' > "$_lb_settings"; fi;',
+  "unset _lb_dir _lb_settings;",
+].join(" ");
+
+export function buildMsbBootstrapScript(
+  options: { autoConversationTitles?: boolean } = {},
+): string {
+  const seedSnippet =
+    options.autoConversationTitles === false ? "" : `${SEED_AUTO_CONVERSATION_TITLES_SNIPPET} `;
+  return `umask 077; printf "%s\\n" "$LETTA_WS_TOKEN" > /tmp/letta-ws-token; unset LETTA_WS_TOKEN; ${seedSnippet}exec letta server --listen "ws://0.0.0.0:\${LETTA_LISTEN_PORT:-4500}" --ws-auth capability-token --ws-token-file /tmp/letta-ws-token`;
+}
+
+export const DEFAULT_MSB_BOOTSTRAP_SCRIPT = buildMsbBootstrapScript();
 
 export function makeMsbSandboxName(key: string): string {
   const hash = createHash("sha256").update(key).digest("hex").slice(0, 12);
@@ -623,7 +646,12 @@ export class MicrosandboxProvider implements ConversationTargetProvider {
             }
           : undefined,
         entrypoint: this.options.command ? undefined : "/bin/sh",
-        command: this.options.command ?? ["-c", DEFAULT_MSB_BOOTSTRAP_SCRIPT],
+        command: this.options.command ?? [
+          "-c",
+          buildMsbBootstrapScript({
+            autoConversationTitles: this.options.autoConversationTitles ?? true,
+          }),
+        ],
       });
     } catch (err) {
       if (hostPort !== undefined) {
