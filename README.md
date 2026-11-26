@@ -16,7 +16,7 @@ Install globally from GitHub with Bun (includes both the bundled Letta CLI and M
 <!-- x-release-please-start-version -->
 ```sh
 # Latest release
-bun install -g github:kaaloo/lettabox#lettabox-v0.5.0
+bun install -g github:kaaloo/lettabox#lettabox-v0.6.0
 
 # Or latest main
 bun install -g github:kaaloo/lettabox
