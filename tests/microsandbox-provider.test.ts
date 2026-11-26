@@ -7,6 +7,7 @@ import {
   readFileSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -2141,38 +2142,40 @@ describe("Guest autoConversationTitles bootstrap seeding", () => {
     stderr: string;
   }> {
     const binDir = mkdtempSync(join(tmpdir(), "lettabox-fake-letta-"));
-    const reportPath = join(binDir, "report.json");
+    const argsPath = join(binDir, "args.txt");
+    const envPath = join(binDir, "env.txt");
+    const tokenCopyPath = join(binDir, "token.txt");
     cleanups.push(() => rmSync(binDir, { recursive: true, force: true }));
     cleanups.push(() => rmSync("/tmp/letta-ws-token", { force: true }));
+
+    symlinkSync(process.execPath, join(binDir, "bun"));
 
     const fakeLettaPath = join(binDir, "letta");
     writeFileSync(
       fakeLettaPath,
-      `#!${process.execPath}
-const fs = require("node:fs");
-const tokenFileContent = fs.existsSync("/tmp/letta-ws-token")
-  ? fs.readFileSync("/tmp/letta-ws-token", "utf8")
-  : "";
-fs.writeFileSync(
-  ${JSON.stringify(reportPath)},
-  JSON.stringify({
-    args: process.argv.slice(2),
-    env: {
-      LETTA_WS_TOKEN: process.env.LETTA_WS_TOKEN,
-      LETTA_SETTINGS_PATH: process.env.LETTA_SETTINGS_PATH,
-      _lb_dir: process.env._lb_dir,
-      _lb_settings: process.env._lb_settings,
-    },
-    tokenFileContent,
-  }),
-);
+      `#!/bin/sh
+: > ${JSON.stringify(argsPath)}
+for arg in "$@"; do
+  printf '%s\\n' "$arg" >> ${JSON.stringify(argsPath)}
+done
+{
+  printf 'LETTA_WS_TOKEN=%s\\n' "\${LETTA_WS_TOKEN+set}"
+  printf 'LETTA_SETTINGS_PATH=%s\\n' "\${LETTA_SETTINGS_PATH+set}"
+  printf '_lb_dir=%s\\n' "\${_lb_dir+set}"
+  printf '_lb_settings=%s\\n' "\${_lb_settings+set}"
+} > ${JSON.stringify(envPath)}
+if [ -f /tmp/letta-ws-token ]; then
+  cp /tmp/letta-ws-token ${JSON.stringify(tokenCopyPath)}
+fi
 `,
       "utf8",
     );
     chmodSync(fakeLettaPath, 0o755);
 
+    // Isolate PATH from host version-manager shims (e.g. mise/asdf/volta/nvm)
+    // whose lookup can stall when HOME is overridden to an empty temp directory.
     const env: Record<string, string> = {
-      PATH: `${binDir}:${process.env.PATH ?? "/usr/bin:/bin"}`,
+      PATH: `${binDir}:/usr/bin:/bin`,
       HOME: options.homeDir,
       LETTA_WS_TOKEN: options.token ?? "test-cap-token-123",
       LETTA_LISTEN_PORT: String(options.port ?? 4500),
@@ -2183,20 +2186,26 @@ fs.writeFileSync(
 
     const proc = Bun.spawn(["/bin/sh", "-c", options.script], {
       env,
-      stdout: "pipe",
+      stdout: "ignore",
       stderr: "pipe",
     });
     const [stderr, exitCode] = await Promise.all([new Response(proc.stderr).text(), proc.exited]);
-    const report = JSON.parse(readFileSync(reportPath, "utf8")) as {
-      args: string[];
-      env: Record<string, string | undefined>;
-      tokenFileContent: string;
-    };
+    const argsRaw = readFileSync(argsPath, "utf8");
+    const args = argsRaw.length > 0 ? argsRaw.replace(/\n$/, "").split("\n") : [];
+    const envMap: Record<string, string | undefined> = {};
+    for (const line of readFileSync(envPath, "utf8").trim().split("\n")) {
+      const idx = line.indexOf("=");
+      if (idx === -1) continue;
+      const key = line.slice(0, idx);
+      const val = line.slice(idx + 1);
+      envMap[key] = val.length > 0 ? val : undefined;
+    }
+    const tokenFileContent = existsSync(tokenCopyPath) ? readFileSync(tokenCopyPath, "utf8") : "";
     return {
       exitCode,
-      args: report.args,
-      env: report.env,
-      tokenFileContent: report.tokenFileContent,
+      args,
+      env: envMap,
+      tokenFileContent,
       stderr,
     };
   }
