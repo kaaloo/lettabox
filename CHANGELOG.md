@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.6.0](https://github.com/kaaloo/lettabox/compare/lettabox-v0.5.0...lettabox-v0.6.0) (2026-11-26)
+
+
+### Bug Fixes
+
+* **proxy:** auto-generate conversation titles on turn_finished end_turn ([63385ad](https://github.com/kaaloo/lettabox/commit/63385ada69863083ea91e5b0fcba2ea81d3141c2))
+* **proxy:** auto-generate conversation titles on turn_finished end_turn ([18fe3a7](https://github.com/kaaloo/lettabox/commit/18fe3a702d0198e0f578ce3b7736a6cecc594886)), closes [#40](https://github.com/kaaloo/lettabox/issues/40)
+
 ## [0.5.0](https://github.com/kaaloo/lettabox/compare/lettabox-v0.4.0...lettabox-v0.5.0) (2026-11-26)
 
 
