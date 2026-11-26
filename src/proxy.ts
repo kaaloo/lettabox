@@ -1,4 +1,5 @@
 import type { ProxyConfig } from "./config.ts";
+import { ConversationTitler } from "./conversation-titler.ts";
 import { DownstreamClient } from "./downstream.ts";
 import { LETTABOX_CLOUD_STATUS_EMOJI, LETTABOX_STATUS_EMOJI } from "./machine-metadata.ts";
 import { type ActiveSandboxInfo, MicrosandboxProvider } from "./microsandbox-provider.ts";
@@ -96,6 +97,7 @@ export class PassthroughProxy {
   private msbProvider: MicrosandboxProvider | null = null;
   private asyncCloseProvider: (() => Promise<void>) | null = null;
   private router: EnvelopeRouter | null = null;
+  private conversationTitler: ConversationTitler | null = null;
   private upstream: UpstreamRelayClient | null = null;
   private stopped = false;
 
@@ -250,12 +252,32 @@ export class PassthroughProxy {
     }
     this.conversationProvider = provider;
 
+    const conversationTitler = this.config.sandbox.autoConversationTitles
+      ? new ConversationTitler({
+          lettaServerUrl: this.config.lettaServerUrl,
+          lettaApiKey: this.config.lettaApiKey,
+          fetchImpl: this.fetchImpl,
+          logger: this.logger,
+        })
+      : null;
+    this.conversationTitler = conversationTitler;
+
     const router = new EnvelopeRouter({
       controlPlane: controlTarget,
       conversationProvider: provider,
       sendToUpstream: (raw, frameType) => this.upstream?.send(raw, frameType) ?? null,
       debugFrames: this.config.debugFrames,
       logger: this.logger,
+      onTurnFinished: conversationTitler
+        ? ({ conversationId, stopReason }) => {
+            void conversationTitler.handleTurnFinished(conversationId, stopReason);
+          }
+        : undefined,
+      onConversationManualTitle: conversationTitler
+        ? (conversationId) => {
+            conversationTitler.markTitled(conversationId);
+          }
+        : undefined,
     });
     this.router = router;
 
@@ -312,6 +334,8 @@ export class PassthroughProxy {
     if (this.stopped) return;
     this.stopped = true;
     this.onUpstreamDisconnect?.();
+    this.conversationTitler?.stop();
+    this.conversationTitler = null;
     this.upstream?.close();
     this.upstream = null;
     if (this.asyncCloseProvider) {

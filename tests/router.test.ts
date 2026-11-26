@@ -466,4 +466,71 @@ describe("EnvelopeRouter", () => {
         .map((f) => f.type),
     ).toEqual(["input", "abort_message"]);
   });
+
+  test("invokes onTurnFinished after forwarding downstream turn_finished and onConversationManualTitle on conversation_update", async () => {
+    const control = makeFakeTarget("control-plane");
+    const fake = makeFakeProvider();
+    const events: string[] = [];
+
+    const router = new EnvelopeRouter({
+      controlPlane: control.target,
+      conversationProvider: fake.provider,
+      sendToUpstream: (raw) => {
+        const parsed = JSON.parse(raw) as { type?: string };
+        events.push(`upstream:${parsed.type}`);
+        return "control";
+      },
+      onTurnFinished: ({ conversationId, stopReason }) => {
+        events.push(`turn_finished:${conversationId}:${stopReason ?? "none"}`);
+      },
+      onConversationManualTitle: (conversationId) => {
+        events.push(`manual_title:${conversationId}`);
+      },
+    });
+
+    const worker = makeFakeTarget("worker-1");
+    router.handleDownstreamMessage(
+      worker.target,
+      JSON.stringify({
+        type: "turn_finished",
+        runtime: { agent_id: "ag-1", conversation_id: "conv-42" },
+        stop_reason: "end_turn",
+      }),
+    );
+    // default conversation must not invoke onTurnFinished
+    router.handleDownstreamMessage(
+      control.target,
+      JSON.stringify({
+        type: "turn_finished",
+        runtime: { agent_id: "ag-1", conversation_id: "default" },
+        stop_reason: "end_turn",
+      }),
+    );
+    // upstream conversation_update with summary invokes onConversationManualTitle
+    await router.handleUpstreamMessage(
+      JSON.stringify({
+        type: "conversation_update",
+        request_id: "req-upd-1",
+        conversation_id: "conv-42",
+        body: { summary: "Custom Title" },
+      }),
+    );
+    // conversation_update without summary (e.g. model update) must not invoke it
+    await router.handleUpstreamMessage(
+      JSON.stringify({
+        type: "conversation_update",
+        request_id: "req-upd-2",
+        conversation_id: "conv-99",
+        body: { model: "openai/gpt-6" },
+      }),
+    );
+
+    expect(events).toEqual([
+      "upstream:turn_finished",
+      "turn_finished:conv-42:end_turn",
+      "upstream:turn_finished",
+      "manual_title:conv-42",
+    ]);
+    expect(control.parsed().map((f) => f.request_id)).toEqual(["req-upd-1", "req-upd-2"]);
+  });
 });

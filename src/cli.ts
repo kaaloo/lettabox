@@ -46,7 +46,7 @@ Options:
   --memory <size>                 Memory limit per microVM (default: 2G local, 1G cloud)
   --cpus <count>                  vCPU limit per microVM (default: 2 local, 1 cloud)
   --idle-timeout <ms>             Idle timeout before reaping microVMs (default: 1800000 / 30m)
-  --no-auto-conversation-titles   Disable seeding autoConversationTitles in guest microVMs
+  --no-auto-conversation-titles   Disable automatic AI conversation title generation
   --control-plane-url <ws://>     Attach to an existing control-plane letta server instead of auto-spawning
   --status-port <port>            Expose local http://127.0.0.1:<port>/status JSON endpoint
   --lifecycle-output <jsonl>      Emit lettaLifecycleProtocol v1 JSONL events on stdout (for macOS menubar)
@@ -65,7 +65,7 @@ Environment:
   MSB_COMPUTE_TYPE                Optional Microsandbox Cloud compute tier: standard or shared
   MSB_HOME                        Microsandbox home (default: ~/.lettabox/microsandbox)
   SANDBOX_AUTO_CONVERSATION_TITLES
-                                  Seed autoConversationTitles: true in guest microVMs (default: true)
+                                  Auto-generate AI conversation titles and seed guest setting (default: true)
 `;
 
 export function createLifecycleEmitter(

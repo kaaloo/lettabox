@@ -109,6 +109,7 @@ function createMockRelay(options: {
   supportsPairedListenerGenerations?: boolean;
   autoPong?: boolean;
   autoListenerReady?: boolean;
+  onApiRequest?: (req: Request, url: URL) => Response | undefined | Promise<Response | undefined>;
 }) {
   const supportsSplit = options.supportsSplitStatusChannels ?? true;
   const supportsPaired = options.supportsPairedListenerGenerations ?? true;
@@ -176,6 +177,9 @@ function createMockRelay(options: {
         if (ok) return undefined;
         return new Response("Upgrade failed", { status: 400 });
       }
+
+      const custom = await options.onApiRequest?.(req, url);
+      if (custom) return custom;
 
       return new Response("not found", { status: 404 });
     },
@@ -686,5 +690,226 @@ describe("PassthroughProxy integration", () => {
       (s) => (JSON.parse(s) as { event_seq: number }).event_seq,
     );
     expect(seqs).toEqual([1, 2, 3, 4]);
+  });
+
+  test("auto-titles untitled conversations on downstream turn_finished end_turn and respects opt-out", async () => {
+    const controlPlane = createMockDownstream();
+    const worker = createMockDownstream();
+    const state: { summary: string | null } = { summary: null };
+    const apiHits: string[] = [];
+
+    const relay = createMockRelay({
+      expectedApiKey: "test-api-key",
+      async onApiRequest(req, url) {
+        if (req.headers.get("authorization") !== "Bearer test-api-key") {
+          return new Response("unauthorized", { status: 401 });
+        }
+        apiHits.push(`${req.method} ${url.pathname}`);
+        if (req.method === "GET" && url.pathname === "/v1/conversations/conv-auto-1") {
+          return Response.json({ id: "conv-auto-1", summary: state.summary });
+        }
+        if (req.method === "GET" && url.pathname === "/v1/conversations/conv-auto-1/messages") {
+          return Response.json([
+            { message_type: "assistant_message", content: "Ready to help test naming." },
+            { message_type: "user_message", content: "Test automatic naming in lettabox" },
+          ]);
+        }
+        if (req.method === "POST" && url.pathname === "/v1/conversations/conv-auto-1/summarize") {
+          return Response.json({ summary: "Lettabox Automatic Naming Test" });
+        }
+        if (req.method === "PATCH" && url.pathname === "/v1/conversations/conv-auto-1") {
+          const body = (await req.json()) as { summary?: string };
+          state.summary = body.summary ?? null;
+          return Response.json({ id: "conv-auto-1", summary: state.summary });
+        }
+        return undefined;
+      },
+    });
+    cleanups.push(
+      () => controlPlane.stop(),
+      () => worker.stop(),
+      () => relay.stop(),
+    );
+
+    let readyCount = 0;
+    const proxy = new PassthroughProxy({
+      config: makeConfig(relay.httpUrl, controlPlane, {
+        workerWsUrls: [worker.wsUrl],
+      }),
+      logger: silentLogger,
+      onUpstreamReady: () => {
+        readyCount += 1;
+      },
+    });
+    cleanups.push(() => proxy.stop());
+
+    await proxy.start();
+    await waitFor(() => readyCount === 1);
+
+    // Bind conv-auto-1 to worker, then emit turn_finished(end_turn)
+    relay.sendOnControl({
+      type: "input",
+      request_id: "req-1",
+      runtime: { agent_id: "ag-1", conversation_id: "conv-auto-1" },
+      text: "Test automatic naming in lettabox",
+    });
+    await waitFor(() => worker.received.length === 1);
+
+    worker.sendToProxy({
+      type: "turn_finished",
+      event_seq: 1,
+      turn_id: "turn-1",
+      stop_reason: "end_turn",
+      runtime: { agent_id: "ag-1", conversation_id: "conv-auto-1" },
+    });
+
+    await waitFor(() => relay.controlMessages.length === 1 && state.summary !== null);
+    expect(JSON.parse(relay.controlMessages[0] ?? "{}").type).toBe("turn_finished");
+    expect(state.summary).toBe("Lettabox Automatic Naming Test");
+    expect(apiHits).toEqual([
+      "GET /v1/conversations/conv-auto-1",
+      "GET /v1/conversations/conv-auto-1/messages",
+      "POST /v1/conversations/conv-auto-1/summarize",
+      "GET /v1/conversations/conv-auto-1",
+      "PATCH /v1/conversations/conv-auto-1",
+    ]);
+
+    // Now test opt-out: autoConversationTitles: false skips all conversation API calls
+    await proxy.stopAsync();
+    const apiHitsDisabled: string[] = [];
+    const relayDisabled = createMockRelay({
+      expectedApiKey: "test-api-key",
+      onApiRequest(req, url) {
+        apiHitsDisabled.push(`${req.method} ${url.pathname}`);
+        return Response.json({});
+      },
+    });
+    cleanups.push(() => relayDisabled.stop());
+
+    let readyDisabled = 0;
+    const baseCfg = makeConfig(relayDisabled.httpUrl, controlPlane, {
+      workerWsUrls: [worker.wsUrl],
+    });
+    const proxyDisabled = new PassthroughProxy({
+      config: {
+        ...baseCfg,
+        sandbox: { ...baseCfg.sandbox, autoConversationTitles: false },
+      },
+      logger: silentLogger,
+      onUpstreamReady: () => {
+        readyDisabled += 1;
+      },
+    });
+    cleanups.push(() => proxyDisabled.stop());
+
+    await proxyDisabled.start();
+    await waitFor(() => readyDisabled === 1);
+
+    const prevWorkerCount = worker.received.length;
+    relayDisabled.sendOnControl({
+      type: "input",
+      request_id: "req-disabled-1",
+      runtime: { agent_id: "ag-1", conversation_id: "conv-auto-disabled" },
+      text: "Hello with titles disabled",
+    });
+    await waitFor(() => worker.received.length === prevWorkerCount + 1);
+
+    worker.sendToProxy({
+      type: "turn_finished",
+      event_seq: 2,
+      turn_id: "turn-2",
+      stop_reason: "end_turn",
+      runtime: { agent_id: "ag-1", conversation_id: "conv-auto-disabled" },
+    });
+    await waitFor(() => relayDisabled.controlMessages.length === 1);
+    await Bun.sleep(50);
+    expect(apiHitsDisabled).toHaveLength(0);
+  });
+
+  test("upstream conversation_update with manual summary aborts in-flight auto-titling", async () => {
+    const controlPlane = createMockDownstream();
+    const worker = createMockDownstream();
+    let resolveSummarizeStarted!: () => void;
+    const summarizeStarted = new Promise<void>((resolve) => {
+      resolveSummarizeStarted = resolve;
+    });
+    let releaseSummarize!: () => void;
+    const summarizeGate = new Promise<void>((resolve) => {
+      releaseSummarize = resolve;
+    });
+    let patchCalled = false;
+
+    const relay = createMockRelay({
+      expectedApiKey: "test-api-key",
+      async onApiRequest(req, url) {
+        if (req.method === "GET" && url.pathname === "/v1/conversations/conv-manual") {
+          return Response.json({ id: "conv-manual", summary: null });
+        }
+        if (req.method === "GET" && url.pathname === "/v1/conversations/conv-manual/messages") {
+          return Response.json([{ message_type: "user_message", content: "Hello" }]);
+        }
+        if (req.method === "POST" && url.pathname === "/v1/conversations/conv-manual/summarize") {
+          resolveSummarizeStarted();
+          await summarizeGate;
+          return Response.json({ summary: "Should Not Overwrite" });
+        }
+        if (req.method === "PATCH" && url.pathname === "/v1/conversations/conv-manual") {
+          patchCalled = true;
+          return Response.json({ id: "conv-manual", summary: "Should Not Overwrite" });
+        }
+        return undefined;
+      },
+    });
+    cleanups.push(
+      () => controlPlane.stop(),
+      () => worker.stop(),
+      () => relay.stop(),
+    );
+
+    let readyCount = 0;
+    const proxy = new PassthroughProxy({
+      config: makeConfig(relay.httpUrl, controlPlane, {
+        workerWsUrls: [worker.wsUrl],
+      }),
+      logger: silentLogger,
+      onUpstreamReady: () => {
+        readyCount += 1;
+      },
+    });
+    cleanups.push(() => proxy.stop());
+
+    await proxy.start();
+    await waitFor(() => readyCount === 1);
+
+    // Bind worker and emit turn_finished to start auto-titling
+    relay.sendOnControl({
+      type: "input",
+      request_id: "req-1",
+      runtime: { agent_id: "ag-1", conversation_id: "conv-manual" },
+      text: "Hello",
+    });
+    await waitFor(() => worker.received.length === 1);
+
+    worker.sendToProxy({
+      type: "turn_finished",
+      event_seq: 1,
+      turn_id: "turn-1",
+      stop_reason: "end_turn",
+      runtime: { agent_id: "ag-1", conversation_id: "conv-manual" },
+    });
+    await summarizeStarted;
+
+    // User manually renames conversation via WebSocket while summarize is in flight
+    relay.sendOnControl({
+      type: "conversation_update",
+      request_id: "req-rename",
+      conversation_id: "conv-manual",
+      body: { summary: "User Chosen Name" },
+    });
+    await waitFor(() => controlPlane.received.length === 1);
+    releaseSummarize();
+    await Bun.sleep(50);
+
+    expect(patchCalled).toBe(false);
   });
 });
