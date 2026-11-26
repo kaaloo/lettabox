@@ -2,11 +2,37 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { runCli } from "../src/cli.ts";
+import { buildInteractiveLoginCommand, runCli } from "../src/cli.ts";
+import type { Logger } from "../src/proxy.ts";
 import { RegistrationAuthError, registerEnvironment } from "../src/register.ts";
 import { UpstreamRelayClient } from "../src/upstream.ts";
 
 const tempDirs: string[] = [];
+
+function createCapturingLogger(): {
+  logger: Logger;
+  info: string[];
+  warn: string[];
+  error: string[];
+  debug: string[];
+} {
+  const info: string[] = [];
+  const warn: string[] = [];
+  const error: string[] = [];
+  const debug: string[] = [];
+  return {
+    info,
+    warn,
+    error,
+    debug,
+    logger: {
+      info: (msg) => info.push(msg),
+      warn: (msg) => warn.push(msg),
+      error: (msg) => error.push(msg),
+      debug: (msg) => debug.push(msg),
+    },
+  };
+}
 
 afterEach(() => {
   while (tempDirs.length > 0) {
@@ -16,12 +42,37 @@ afterEach(() => {
 });
 
 describe("Authentication & login handling", () => {
-  test("runCli launches interactive `letta login` in TTY mode when credentials are missing", async () => {
+  test("buildInteractiveLoginCommand uses the valid `setup` subcommand supported by bundled letta-code", async () => {
+    expect(buildInteractiveLoginCommand("/usr/local/bin/letta")).toEqual([
+      "/usr/local/bin/letta",
+      "setup",
+    ]);
+
+    const bundledCmd = buildInteractiveLoginCommand();
+    expect(bundledCmd[bundledCmd.length - 1]).toBe("setup");
+
+    const proc = Bun.spawn([...bundledCmd, "--help"], {
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [stdout, stderr, exitCode] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+      proc.exited,
+    ]);
+    expect(exitCode).toBe(0);
+    expect(stderr).toBe("");
+    expect(stdout).toContain("letta setup");
+  });
+
+  test("runCli launches interactive `letta setup` in TTY mode when credentials are missing", async () => {
     const dir = mkdtempSync(join(tmpdir(), "lettabox-auth-"));
     tempDirs.push(dir);
     const settingsFile = join(dir, "settings.json");
 
     const loginCalls: string[] = [];
+    const logs = createCapturingLogger();
     let spawnedWithKey: string | undefined;
     let exitCode: number | undefined;
 
@@ -31,6 +82,7 @@ describe("Authentication & login handling", () => {
         LETTA_DEVICE_ID_FILE: join(dir, "device-id"),
       },
       isInteractiveTty: true,
+      logger: logs.logger,
       runInteractiveLogin: async (bin) => {
         loginCalls.push(bin);
         writeFileSync(settingsFile, JSON.stringify({ apiKey: "sk-let-logged-in" }), "utf8");
@@ -48,15 +100,19 @@ describe("Authentication & login handling", () => {
     expect(loginCalls).toEqual(["/usr/local/bin/letta"]);
     expect(spawnedWithKey).toBe("sk-let-logged-in");
     expect(exitCode).toBe(1);
+    expect(logs.info.some((line) => line.includes("/usr/local/bin/letta setup"))).toBe(true);
+    expect(logs.error).toEqual(["Fatal error: stop after verifying token"]);
   });
 
-  test("runCli skips interactive login in --lifecycle-output jsonl mode and exits 1", async () => {
+  test("runCli skips interactive setup in --lifecycle-output jsonl mode and exits 1", async () => {
     const dir = mkdtempSync(join(tmpdir(), "lettabox-auth-jsonl-"));
     tempDirs.push(dir);
     const settingsFile = join(dir, "settings.json");
 
     let loginCalled = false;
     let exitCode: number | undefined;
+    const logs = createCapturingLogger();
+    const lifecycleLines: string[] = [];
 
     await runCli(["--lifecycle-output", "jsonl"], {
       env: {
@@ -64,6 +120,8 @@ describe("Authentication & login handling", () => {
         LETTA_DEVICE_ID_FILE: join(dir, "device-id"),
       },
       isInteractiveTty: true,
+      logger: logs.logger,
+      writeLifecycle: (line) => lifecycleLines.push(line),
       runInteractiveLogin: async () => {
         loginCalled = true;
         return 0;
@@ -75,14 +133,20 @@ describe("Authentication & login handling", () => {
 
     expect(loginCalled).toBe(false);
     expect(exitCode).toBe(1);
+    expect(lifecycleLines.map((line) => JSON.parse(line))).toEqual([
+      { lettaLifecycleProtocol: 1, state: "starting" },
+      { lettaLifecycleProtocol: 1, state: "error" },
+    ]);
+    expect(logs.error[0]).toContain("letta setup");
   });
 
-  test("runCli fails cleanly if interactive login exits non-zero", async () => {
+  test("runCli fails cleanly if interactive setup exits non-zero", async () => {
     const dir = mkdtempSync(join(tmpdir(), "lettabox-auth-fail-"));
     tempDirs.push(dir);
 
     let spawnCalled = false;
     let exitCode: number | undefined;
+    const logs = createCapturingLogger();
 
     await runCli([], {
       env: {
@@ -90,6 +154,7 @@ describe("Authentication & login handling", () => {
         LETTA_DEVICE_ID_FILE: join(dir, "device-id"),
       },
       isInteractiveTty: true,
+      logger: logs.logger,
       runInteractiveLogin: async () => 1,
       spawnControlPlane: async () => {
         spawnCalled = true;
@@ -102,6 +167,7 @@ describe("Authentication & login handling", () => {
 
     expect(spawnCalled).toBe(false);
     expect(exitCode).toBe(1);
+    expect(logs.error[0]).toContain("`letta setup` exited with code 1");
   });
 
   test("registerEnvironment throws RegistrationAuthError on HTTP 401 and 403", async () => {
@@ -127,7 +193,7 @@ describe("Authentication & login handling", () => {
 
       expect(caught).toBeInstanceOf(RegistrationAuthError);
       expect((caught as RegistrationAuthError).status).toBe(status);
-      expect((caught as Error).message).toContain("letta login");
+      expect((caught as Error).message).toContain("letta setup");
     }
   });
 
@@ -165,7 +231,7 @@ describe("Authentication & login handling", () => {
     expect(fetchCount).toBe(1);
     expect(terminalIsError).toBe(true);
     expect(terminalReason).toContain("HTTP 401");
-    expect(terminalReason).toContain("letta login");
+    expect(terminalReason).toContain("letta setup");
   });
 
   test("readApiKeyFromLettaSettings supports nested env.LETTA_API_KEY written by letta-code", async () => {

@@ -131,7 +131,7 @@ export async function registerEnvironment(
       const detail = errBody.trim().slice(0, 200);
       throw new RegistrationAuthError(
         res.status,
-        `Authentication failed during environment registration (HTTP ${res.status}). Your token may be expired or invalid — run \`letta login\` or update LETTA_API_KEY.${detail ? ` (${detail})` : ""}`,
+        `Authentication failed during environment registration (HTTP ${res.status}). Your token may be expired or invalid — run \`letta setup\` or update LETTA_API_KEY.${detail ? ` (${detail})` : ""}`,
       );
     }
     throw new Error(`POST /v1/environments/register failed (${res.status}): ${errBody}`);

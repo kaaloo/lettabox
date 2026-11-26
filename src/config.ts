@@ -184,7 +184,7 @@ export function readApiKeyFromLettaSettings(
 
 export class MissingApiKeyError extends Error {
   constructor(
-    message = "LETTA_API_KEY is required (set LETTA_API_KEY or log in via `letta login` so ~/.letta/settings.json has a token)",
+    message = "LETTA_API_KEY is required (set LETTA_API_KEY or sign in via `letta setup` so ~/.letta/settings.json or keychain has a token)",
   ) {
     super(message);
     this.name = "MissingApiKeyError";
