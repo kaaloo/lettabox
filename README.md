@@ -92,31 +92,31 @@ lettabox --computer-name "My MacBook Pro" --status-port 4590
 
 Run `lettabox --help` for the full flag list.
 
-| Flag / Alias                    | Environment Variable               | Default                              | Description                                                                                  |
-| ------------------------------- | ---------------------------------- | ------------------------------------ | -------------------------------------------------------------------------------------------- |
-| `--name`, `--computer-name`     | `LETTA_CONNECTION_NAME`            | `lettabox-<hostname>`                | Display name shown in `chat.letta.com`                                                       |
-| `--mode`                        | `SANDBOX_MODE`                     | `microsandbox` (CLI) / `static`      | `microsandbox` (`msb`) or `static` (`WORKER_URLS`)                                           |
-| `--backend`                     | `MSB_BACKEND`                      | `local`                              | Microsandbox backend: `local` or `cloud` (`remote` alias)                                    |
-| `--compute-type`                | `MSB_COMPUTE_TYPE`                 | _(server default)_                   | Microsandbox Cloud compute tier: `standard` or `shared`                                      |
-| `--msb-profile`                 | `MSB_PROFILE`                      | _(unset)_                            | Named Microsandbox profile from `~/.microsandbox/config.json`                                |
-| `--msb-api-url`                 | `MSB_API_URL`                      | `https://api.microsandbox.dev`       | Override Microsandbox Cloud API endpoint                                                     |
-| —                               | `MSB_API_KEY`                      | _(unset)_                            | Microsandbox Cloud API key (required for cloud unless `MSB_PROFILE` is set)                  |
-| `--image`                       | `SANDBOX_IMAGE`                    | `ghcr.io/letta-ai/letta-code:latest` | OCI image for ephemeral conversation microVMs                                                |
-| `--memory`                      | `SANDBOX_MEMORY_LIMIT`             | `2G` (local) / `1G` (cloud)          | Memory limit per microVM                                                                     |
-| `--cpus`                        | `SANDBOX_CPU_LIMIT`                | `2` (local) / `1` (cloud)            | vCPU limit per microVM                                                                       |
-| `--idle-timeout`                | `SANDBOX_IDLE_TIMEOUT_MS`          | `1800000` (30m)                      | Idle duration before an inactive conversation microVM is reaped                              |
-| —                               | `SANDBOX_WARM_POOL_SIZE`           | `1` (local) / `0` (cloud)            | Number of pre-warmed standby microVMs kept ready (`0` to disable)                            |
-| `--no-auto-conversation-titles` | `SANDBOX_AUTO_CONVERSATION_TITLES` | `true`                               | Seed `autoConversationTitles: true` in guest microVM `~/.letta/settings.json` before startup |
-| `--control-plane-url`           | `CONTROL_PLANE_URL`                | _(auto-spawned)_                     | Attach to an existing `letta server --listen` instead of auto-spawning                       |
-| `--status-port`                 | `STATUS_PORT`                      | _(disabled)_                         | Expose local `http://127.0.0.1:<port>/status` JSON endpoint                                  |
-| `--lifecycle-output jsonl`      | —                                  | _(disabled)_                         | Emit `lettaLifecycleProtocol: 1` JSONL state transitions on stdout                           |
-| `--msb-path`                    | `MSB_PATH`                         | _(SDK-bundled runtime)_              | Advanced override for the `msb` runtime binary                                               |
-| —                               | `MSB_HOME`                         | `~/.lettabox/microsandbox`           | Microsandbox runtime/state home, isolated from existing `~/.microsandbox`                    |
-| `--letta-bin`                   | `LETTA_BIN`                        | _(bundled `@letta-ai/letta-code`)_   | Override the bundled `letta` binary for the control-plane and `letta setup`                  |
-| `--debug`                       | `DEBUG_FRAMES`                     | `false`                              | Log routed frame envelope summaries and `event_seq` rewrites                                 |
-| —                               | `LETTA_API_KEY`                    | `~/.letta/settings.json`             | Letta Cloud API key (auto-loaded from `letta setup` settings or keychain if unset)           |
-| —                               | `MSB_SECRET_INJECTION`             | `true`                               | Inject `LETTA_API_KEY` at the host network boundary for HTTPS Letta servers                  |
-| —                               | `WORKER_URLS`                      | _(empty)_                            | Comma-separated static worker URLs when `--mode static`                                      |
+| Flag / Alias                    | Environment Variable               | Default                              | Description                                                                                 |
+| ------------------------------- | ---------------------------------- | ------------------------------------ | ------------------------------------------------------------------------------------------- |
+| `--name`, `--computer-name`     | `LETTA_CONNECTION_NAME`            | `lettabox-<hostname>`                | Display name shown in `chat.letta.com`                                                      |
+| `--mode`                        | `SANDBOX_MODE`                     | `microsandbox` (CLI) / `static`      | `microsandbox` (`msb`) or `static` (`WORKER_URLS`)                                          |
+| `--backend`                     | `MSB_BACKEND`                      | `local`                              | Microsandbox backend: `local` or `cloud` (`remote` alias)                                   |
+| `--compute-type`                | `MSB_COMPUTE_TYPE`                 | _(server default)_                   | Microsandbox Cloud compute tier: `standard` or `shared`                                     |
+| `--msb-profile`                 | `MSB_PROFILE`                      | _(unset)_                            | Named Microsandbox profile from `~/.microsandbox/config.json`                               |
+| `--msb-api-url`                 | `MSB_API_URL`                      | `https://api.microsandbox.dev`       | Override Microsandbox Cloud API endpoint                                                    |
+| —                               | `MSB_API_KEY`                      | _(unset)_                            | Microsandbox Cloud API key (required for cloud unless `MSB_PROFILE` is set)                 |
+| `--image`                       | `SANDBOX_IMAGE`                    | `ghcr.io/letta-ai/letta-code:latest` | OCI image for ephemeral conversation microVMs                                               |
+| `--memory`                      | `SANDBOX_MEMORY_LIMIT`             | `2G` (local) / `1G` (cloud)          | Memory limit per microVM                                                                    |
+| `--cpus`                        | `SANDBOX_CPU_LIMIT`                | `2` (local) / `1` (cloud)            | vCPU limit per microVM                                                                      |
+| `--idle-timeout`                | `SANDBOX_IDLE_TIMEOUT_MS`          | `1800000` (30m)                      | Idle duration before an inactive conversation microVM is reaped                             |
+| —                               | `SANDBOX_WARM_POOL_SIZE`           | `1` (local) / `0` (cloud)            | Number of pre-warmed standby microVMs kept ready (`0` to disable)                           |
+| `--no-auto-conversation-titles` | `SANDBOX_AUTO_CONVERSATION_TITLES` | `true`                               | Auto-generate AI titles after `end_turn` when unset and seed guest `autoConversationTitles` |
+| `--control-plane-url`           | `CONTROL_PLANE_URL`                | _(auto-spawned)_                     | Attach to an existing `letta server --listen` instead of auto-spawning                      |
+| `--status-port`                 | `STATUS_PORT`                      | _(disabled)_                         | Expose local `http://127.0.0.1:<port>/status` JSON endpoint                                 |
+| `--lifecycle-output jsonl`      | —                                  | _(disabled)_                         | Emit `lettaLifecycleProtocol: 1` JSONL state transitions on stdout                          |
+| `--msb-path`                    | `MSB_PATH`                         | _(SDK-bundled runtime)_              | Advanced override for the `msb` runtime binary                                              |
+| —                               | `MSB_HOME`                         | `~/.lettabox/microsandbox`           | Microsandbox runtime/state home, isolated from existing `~/.microsandbox`                   |
+| `--letta-bin`                   | `LETTA_BIN`                        | _(bundled `@letta-ai/letta-code`)_   | Override the bundled `letta` binary for the control-plane and `letta setup`                 |
+| `--debug`                       | `DEBUG_FRAMES`                     | `false`                              | Log routed frame envelope summaries and `event_seq` rewrites                                |
+| —                               | `LETTA_API_KEY`                    | `~/.letta/settings.json`             | Letta Cloud API key (auto-loaded from `letta setup` settings or keychain if unset)          |
+| —                               | `MSB_SECRET_INJECTION`             | `true`                               | Inject `LETTA_API_KEY` at the host network boundary for HTTPS Letta servers                 |
+| —                               | `WORKER_URLS`                      | _(empty)_                            | Comma-separated static worker URLs when `--mode static`                                     |
 
 `.env.example` documents placeholder-only local configuration. Never commit real credentials; `.env`, key material, and `private/` are gitignored.
 

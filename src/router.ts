@@ -32,6 +32,11 @@ export interface RouterLogger {
   error: (msg: string) => void;
 }
 
+export interface TurnFinishedEvent {
+  conversationId: string;
+  stopReason?: string;
+}
+
 export interface EnvelopeRouterOptions {
   controlPlane: DownstreamTarget;
   conversationProvider: ConversationTargetProvider;
@@ -39,6 +44,8 @@ export interface EnvelopeRouterOptions {
   debugFrames?: boolean;
   logger?: RouterLogger;
   maxTrackedRequests?: number;
+  onTurnFinished?: (event: TurnFinishedEvent) => void;
+  onConversationManualTitle?: (conversationId: string) => void;
 }
 
 interface TrackedInboundRequest {
@@ -53,6 +60,8 @@ export class EnvelopeRouter {
   private readonly debugFrames: boolean;
   private readonly logger?: RouterLogger;
   private readonly maxTrackedRequests: number;
+  private readonly onTurnFinished?: (event: TurnFinishedEvent) => void;
+  private readonly onConversationManualTitle?: (conversationId: string) => void;
 
   private eventSeq = 0;
   private readonly inboundRequests = new Map<string, TrackedInboundRequest>();
@@ -66,6 +75,8 @@ export class EnvelopeRouter {
     this.debugFrames = options.debugFrames ?? false;
     this.logger = options.logger;
     this.maxTrackedRequests = options.maxTrackedRequests ?? 1_000;
+    this.onTurnFinished = options.onTurnFinished;
+    this.onConversationManualTitle = options.onConversationManualTitle;
   }
 
   get currentEventSeq(): number {
@@ -139,6 +150,14 @@ export class EnvelopeRouter {
         `${source.id} -> upstream(${channel ?? "none"}): ${summarizeFrame(frame)}${seqNote}`,
       );
     }
+
+    if (env.type === "turn_finished" && this.onTurnFinished) {
+      const convId = env.runtimeConversationId ?? env.topLevelConversationId;
+      if (convId && convId !== DEFAULT_CONVERSATION_ID) {
+        const stopReason = typeof frame?.stop_reason === "string" ? frame.stop_reason : undefined;
+        this.onTurnFinished({ conversationId: convId, stopReason });
+      }
+    }
   }
 
   private computeOrderKey(env: ReturnType<typeof extractRoutingEnvelope>): string {
@@ -186,6 +205,23 @@ export class EnvelopeRouter {
         target,
         isCreateConversation,
       });
+    }
+
+    if (env.type === "conversation_update" && this.onConversationManualTitle) {
+      const convId = env.topLevelConversationId ?? env.runtimeConversationId;
+      const body = frame?.body;
+      const summary =
+        body && typeof body === "object" && !Array.isArray(body)
+          ? (body as Record<string, unknown>).summary
+          : undefined;
+      if (
+        convId &&
+        convId !== DEFAULT_CONVERSATION_ID &&
+        typeof summary === "string" &&
+        summary.trim().length > 0
+      ) {
+        this.onConversationManualTitle(convId);
+      }
     }
 
     if (this.debugFrames) {
