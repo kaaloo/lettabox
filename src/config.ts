@@ -24,6 +24,7 @@ export interface SandboxConfig {
   msbApiUrl?: string;
   msbProfile?: string;
   msbComputeType?: MsbComputeType;
+  autoConversationTitles: boolean;
 }
 
 export interface ProxyConfig {
@@ -137,6 +138,20 @@ export function parseMsbComputeType(value: string | undefined): MsbComputeType |
     return normalized;
   }
   throw new Error(`Invalid MSB_COMPUTE_TYPE: ${value} (expected "standard" or "shared")`);
+}
+
+function parseBooleanEnv(value: string | undefined, fallback: boolean, name: string): boolean {
+  const normalized = value?.trim().toLowerCase();
+  if (!normalized) {
+    return fallback;
+  }
+  if (normalized === "1" || normalized === "true" || normalized === "yes") {
+    return true;
+  }
+  if (normalized === "0" || normalized === "false" || normalized === "no") {
+    return false;
+  }
+  throw new Error(`Invalid boolean for ${name}: ${value} (expected "true"/"false" or "1"/"0")`);
 }
 
 export function readApiKeyFromLettaSettings(
@@ -323,6 +338,11 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
       msbApiUrl,
       msbProfile,
       msbComputeType,
+      autoConversationTitles: parseBooleanEnv(
+        env.SANDBOX_AUTO_CONVERSATION_TITLES,
+        true,
+        "SANDBOX_AUTO_CONVERSATION_TITLES",
+      ),
     },
     workerWsUrls,
     workerWsToken: workerWsToken || undefined,

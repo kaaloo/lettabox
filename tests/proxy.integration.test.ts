@@ -287,6 +287,7 @@ function makeConfig(
       memoryLimit: "1G",
       cpuLimit: "1",
       msbSecretInjection: true,
+      autoConversationTitles: true,
     },
     workerWsUrls: [],
     heartbeatIntervalMs: 30_000,
