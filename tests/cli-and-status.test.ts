@@ -260,32 +260,30 @@ describe("StatusServer", () => {
 
     let stopped = false;
     const exitCodes: number[] = [];
-    const origError = console.error;
-    const origLog = console.log;
-    console.error = () => {};
-    console.log = () => {};
-    try {
-      await runCli(["--status-port", String(occupied.port)], {
-        env: {
-          LETTA_API_KEY: "test-key",
-          LETTA_DEVICE_ID: "dev-1",
+    const silentLogger = {
+      info: () => {},
+      warn: () => {},
+      error: () => {},
+      debug: () => {},
+    };
+    await runCli(["--status-port", String(occupied.port)], {
+      env: {
+        LETTA_API_KEY: "test-key",
+        LETTA_DEVICE_ID: "dev-1",
+      },
+      logger: silentLogger,
+      spawnControlPlane: async () => ({
+        port: 49999,
+        wsUrl: "ws://127.0.0.1:49999/ws",
+        httpUrl: "http://127.0.0.1:49999",
+        async stop() {
+          stopped = true;
         },
-        spawnControlPlane: async () => ({
-          port: 49999,
-          wsUrl: "ws://127.0.0.1:49999/ws",
-          httpUrl: "http://127.0.0.1:49999",
-          async stop() {
-            stopped = true;
-          },
-        }),
-        exit: (code) => {
-          exitCodes.push(code);
-        },
-      });
-    } finally {
-      console.error = origError;
-      console.log = origLog;
-    }
+      }),
+      exit: (code) => {
+        exitCodes.push(code);
+      },
+    });
 
     expect(stopped).toBe(true);
     expect(exitCodes).toEqual([1]);

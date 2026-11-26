@@ -221,12 +221,18 @@ export interface RunCliOptions {
   spawnControlPlane?: typeof spawnManagedControlPlane;
   runInteractiveLogin?: (lettaBin: string) => Promise<number>;
   isInteractiveTty?: boolean;
+  logger?: Logger;
+  writeLifecycle?: (line: string) => void;
   exit?: (code: number) => void;
 }
 
+export function buildInteractiveLoginCommand(lettaBin?: string): string[] {
+  return [...resolveLettaCommand(lettaBin), "setup"];
+}
+
 async function defaultRunInteractiveLogin(lettaBin?: string): Promise<number> {
-  const command = resolveLettaCommand(lettaBin);
-  const proc = Bun.spawn([...command, "login"], {
+  const command = buildInteractiveLoginCommand(lettaBin);
+  const proc = Bun.spawn(command, {
     stdin: "inherit",
     stdout: "inherit",
     stderr: "inherit",
@@ -255,8 +261,8 @@ export async function runCli(
   }
 
   const jsonlMode = parsed.lifecycleOutput === "jsonl";
-  const emitLifecycle = createLifecycleEmitter(jsonlMode);
-  const proxyLogger: Logger = createConsoleLogger({ stderrOnly: jsonlMode });
+  const emitLifecycle = createLifecycleEmitter(jsonlMode, options.writeLifecycle);
+  const proxyLogger: Logger = options.logger ?? createConsoleLogger({ stderrOnly: jsonlMode });
   const logInfo = (msg: string) => proxyLogger.info(msg);
 
   const mergedEnv: Record<string, string | undefined> = {
@@ -293,19 +299,19 @@ export async function runCli(
     if (!resolvedApiKey && !jsonlMode && isInteractiveTty) {
       const explicitBin = parsed.lettaBin?.trim();
       const label = explicitBin || "letta";
-      logInfo(`No Letta credentials found. Launching \`${label} login\`...`);
+      logInfo(`No Letta credentials found. Launching \`${label} setup\`...`);
       const loginCode = options.runInteractiveLogin
         ? await options.runInteractiveLogin(label)
         : await defaultRunInteractiveLogin(explicitBin);
       if (loginCode !== 0) {
         throw new MissingApiKeyError(
-          `\`${label} login\` exited with code ${loginCode}. Set LETTA_API_KEY or run \`letta login\` to authenticate.`,
+          `\`${label} setup\` exited with code ${loginCode}. Set LETTA_API_KEY or run \`letta setup\` to authenticate.`,
         );
       }
       resolvedApiKey = await resolveLettaApiKeyAsync(mergedEnv);
       if (!resolvedApiKey) {
         throw new MissingApiKeyError(
-          `\`${label} login\` completed, but no API key was found in ~/.letta/settings.json or keychain. Set LETTA_API_KEY or retry \`letta login\`.`,
+          `\`${label} setup\` completed, but no API key was found in ~/.letta/settings.json or keychain. Set LETTA_API_KEY or retry \`letta setup\`.`,
         );
       }
     }
@@ -396,7 +402,11 @@ export async function runCli(
 
     await activeProxy.start();
   } catch (err) {
-    console.error(formatLogLine("Fatal error:", { level: "ERROR" }), err);
+    if (options.logger) {
+      proxyLogger.error(`Fatal error: ${err instanceof Error ? err.message : String(err)}`);
+    } else {
+      console.error(formatLogLine("Fatal error:", { level: "ERROR" }), err);
+    }
     await cleanupAndExit(1);
   }
 }

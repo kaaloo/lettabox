@@ -40,7 +40,7 @@ lettabox
 
 On startup, `lettabox`:
 
-1. Loads your Letta token from `LETTA_API_KEY` or `~/.letta/settings.json` (in an interactive terminal, automatically runs `letta login` if you aren't signed in yet).
+1. Loads your Letta token from `LETTA_API_KEY`, `~/.letta/settings.json`, or keychain (in an interactive terminal, automatically runs `letta setup` if you aren't signed in yet).
 2. Starts a managed local control-plane `letta server`.
 3. Verifies the matching Microsandbox runtime under `~/.lettabox/microsandbox` (isolated from any existing `~/.microsandbox` install), pre-pulls `ghcr.io/letta-ai/letta-code:latest` if not cached, caches the pinned official Linux `gh` CLI binary (SHA-256 verified) under `$MSB_HOME/cache/gh/` and injects it into every microVM at `/usr/local/bin/gh` before boot, and pre-warms a standby microVM so the first conversation hands off immediately.
 4. Connects to Letta Cloud—your computer appears under **Computers** on `chat.letta.com` with a `📦` status subtitle (e.g. `📦 MacBook Pro · Apple M5 Pro · 24 GB`).
@@ -112,9 +112,9 @@ Run `lettabox --help` for the full flag list.
 | `--lifecycle-output jsonl`      | —                                  | _(disabled)_                         | Emit `lettaLifecycleProtocol: 1` JSONL state transitions on stdout                           |
 | `--msb-path`                    | `MSB_PATH`                         | _(SDK-bundled runtime)_              | Advanced override for the `msb` runtime binary                                               |
 | —                               | `MSB_HOME`                         | `~/.lettabox/microsandbox`           | Microsandbox runtime/state home, isolated from existing `~/.microsandbox`                    |
-| `--letta-bin`                   | `LETTA_BIN`                        | _(bundled `@letta-ai/letta-code`)_   | Override the bundled `letta` binary for the control-plane and `letta login`                  |
+| `--letta-bin`                   | `LETTA_BIN`                        | _(bundled `@letta-ai/letta-code`)_   | Override the bundled `letta` binary for the control-plane and `letta setup`                  |
 | `--debug`                       | `DEBUG_FRAMES`                     | `false`                              | Log routed frame envelope summaries and `event_seq` rewrites                                 |
-| —                               | `LETTA_API_KEY`                    | `~/.letta/settings.json`             | Letta Cloud API key (auto-loaded from `letta login` settings if unset)                       |
+| —                               | `LETTA_API_KEY`                    | `~/.letta/settings.json`             | Letta Cloud API key (auto-loaded from `letta setup` settings or keychain if unset)           |
 | —                               | `MSB_SECRET_INJECTION`             | `true`                               | Inject `LETTA_API_KEY` at the host network boundary for HTTPS Letta servers                  |
 | —                               | `WORKER_URLS`                      | _(empty)_                            | Comma-separated static worker URLs when `--mode static`                                      |
 
