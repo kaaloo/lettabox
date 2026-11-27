@@ -19,7 +19,7 @@
   "devDependencies": {
     "@biomejs/biome": "2.6.7",
     "@types/bun": "1.4.4",
-    "cve-lite-cli": "1.41.4",
+    "cve-lite-cli": "1.42.0",
     "typescript": "7.0.2"
   },
   "dependencies": {
