@@ -23,7 +23,7 @@
     "typescript": "7.0.2"
   },
   "dependencies": {
-    "@letta-ai/letta-code": "0.34.61",
+    "@letta-ai/letta-code": "0.34.67",
     "microsandbox": "0.8.2"
   },
   "optionalDependencies": {
